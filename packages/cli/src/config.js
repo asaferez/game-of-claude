@@ -6,8 +6,8 @@ import { randomUUID } from "crypto";
 const CONFIG_DIR = join(homedir(), ".claude");
 const CONFIG_FILE = join(CONFIG_DIR, "gamify.json");
 
-export const API_BASE = process.env.GAME_OF_CLAUDE_API ?? "https://api.gameofclaude.dev";
-export const DASHBOARD_BASE = process.env.GAME_OF_CLAUDE_DASHBOARD ?? "https://gameofclaude.dev";
+export const API_BASE = process.env.GAME_OF_CLAUDE_API ?? "https://game-of-claude-production.up.railway.app";
+export const DASHBOARD_BASE = process.env.GAME_OF_CLAUDE_DASHBOARD ?? "https://game-of-claude.vercel.app";
 export const SETTINGS_FILE = join(CONFIG_DIR, "settings.json");
 
 export function readConfig() {
