@@ -148,6 +148,31 @@ def update_profile(profile_device_id: str, body: ProfilePatch, device_id: str = 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 
+@app.get("/api/activity/{profile_device_id}")
+def get_activity(profile_device_id: str):
+    """Return daily XP event counts for the past 365 days (for activity heatmap)."""
+    db = get_client()
+    if not get_device(db, profile_device_id):
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    from datetime import datetime, timedelta
+    since = (datetime.utcnow() - timedelta(days=365)).date().isoformat()
+    rows = (
+        db.table("xp_log")
+        .select("created_at")
+        .eq("device_id", profile_device_id)
+        .gte("created_at", since)
+        .execute()
+    )
+
+    counts: dict[str, int] = {}
+    for row in rows.data:
+        day = row["created_at"][:10]  # "YYYY-MM-DD"
+        counts[day] = counts.get(day, 0) + 1
+
+    return {"activity": counts}
+
+
 @app.delete("/api/me", status_code=200)
 def delete_me(device_id: str = Depends(require_device)):
     db = get_client()
