@@ -1,0 +1,16 @@
+{
+  "name": "game-of-claude",
+  "version": "0.1.0",
+  "description": "Gamification layer for Claude Code — level up while you ship",
+  "license": "MIT",
+  "bin": {
+    "game-of-claude": "./bin/game-of-claude.js"
+  },
+  "main": "./src/index.js",
+  "type": "module",
+  "files": ["bin/", "src/"],
+  "engines": { "node": ">=18" },
+  "dependencies": { "node-fetch": "^3.3.2" },
+  "keywords": ["claude", "claude-code", "gamification", "developer-tools"],
+  "repository": { "type": "git", "url": "https://github.com/asaferez/game-of-claude.git" }
+}
