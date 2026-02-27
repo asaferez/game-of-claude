@@ -25,13 +25,13 @@ def is_already_processed(db: Client, source_key: str) -> bool:
 
 
 def get_device(db: Client, device_id: str) -> dict | None:
-    res = db.table("devices").select("*").eq("device_id", device_id).maybe_single().execute()
-    return res.data
+    res = db.table("devices").select("*").eq("device_id", device_id).execute()
+    return res.data[0] if res.data else None
 
 
 def get_stats(db: Client, device_id: str) -> dict:
-    res = db.table("user_stats").select("*").eq("device_id", device_id).maybe_single().execute()
-    return res.data or {}
+    res = db.table("user_stats").select("*").eq("device_id", device_id).execute()
+    return res.data[0] if res.data else {}
 
 
 def get_quest_progress(db: Client, device_id: str) -> dict[str, dict]:
