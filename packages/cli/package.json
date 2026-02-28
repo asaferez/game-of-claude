@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "description": "Gamification layer for Claude Code — level up while you ship",
   "license": "MIT",
+  "homepage": "https://game-of-claude.vercel.app/install",
+  "bugs": { "url": "https://github.com/asaferez/game-of-claude/issues" },
   "bin": {
     "game-of-claude": "./bin/game-of-claude.js"
   },
@@ -11,6 +13,7 @@
   "files": ["bin/", "src/"],
   "engines": { "node": ">=18" },
   "dependencies": { "node-fetch": "^3.3.2" },
-  "keywords": ["claude", "claude-code", "gamification", "developer-tools"],
-  "repository": { "type": "git", "url": "https://github.com/asaferez/game-of-claude.git" }
+  "keywords": ["claude", "claude-code", "gamification", "developer-tools", "xp", "rpg"],
+  "repository": { "type": "git", "url": "https://github.com/asaferez/game-of-claude.git" },
+  "publishConfig": { "access": "public" }
 }

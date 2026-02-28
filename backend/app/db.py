@@ -1,7 +1,10 @@
 import os
+import logging
 import hashlib
 from functools import lru_cache
 from supabase import create_client, Client
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -20,8 +23,14 @@ def is_already_processed(db: Client, source_key: str) -> bool:
     try:
         db.table("processed_events").insert({"source_key": source_key}).execute()
         return False
-    except Exception:
-        return True
+    except Exception as e:
+        # A unique-constraint violation means the event was already processed —
+        # any other exception is unexpected and should be visible in logs.
+        err_str = str(e).lower()
+        if "duplicate" in err_str or "unique" in err_str or "23505" in err_str:
+            return True
+        logger.error("Unexpected deduplication error for key=%s: %s", source_key, e)
+        return True  # treat as duplicate to avoid double-XP on transient errors
 
 
 def get_device(db: Client, device_id: str) -> dict | None:

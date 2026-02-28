@@ -1,5 +1,16 @@
-from pydantic import BaseModel
+import re
+from pydantic import BaseModel, Field, field_validator
 from typing import Any, Optional
+
+UUID4_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+
+
+def _validate_uuid4(v: str) -> str:
+    if not UUID4_RE.match(v.lower()):
+        raise ValueError("must be a valid UUID v4")
+    return v.lower()
 
 
 class HookEvent(BaseModel):
@@ -10,16 +21,28 @@ class HookEvent(BaseModel):
     tool_response: Optional[dict[str, Any]] = None
     cwd: Optional[str] = None
     duration_ms: Optional[int] = None
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, v):
+        if v is not None:
+            _validate_uuid4(v)
+        return v
 
 
 class DeviceRegister(BaseModel):
     device_id: str
-    character_name: str
+    character_name: str = Field(min_length=1, max_length=30)
+
+    @field_validator("device_id")
+    @classmethod
+    def validate_device_id(cls, v):
+        return _validate_uuid4(v)
 
 
 class ProfilePatch(BaseModel):
-    character_name: str
+    character_name: str = Field(min_length=1, max_length=30)
 
 
 class QuestCompletion(BaseModel):
