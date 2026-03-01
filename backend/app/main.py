@@ -32,6 +32,8 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 ALLOWED_ORIGINS = [
+    "https://gameofclaude.online",
+    "https://www.gameofclaude.online",
     "https://game-of-claude.vercel.app",
     "http://localhost:3000",
 ]
