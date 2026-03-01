@@ -18,7 +18,7 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r backend/requirements.txt
-      - run: cd backend && pytest tests/ -v
+      - run: cd backend && python -m pytest tests/ -v
 
   dashboard-build:
     name: Dashboard build
