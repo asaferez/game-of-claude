@@ -75,3 +75,53 @@ def get_recent_events(db: Client, device_id: str, days: int = 30) -> list[dict]:
         .execute()
     )
     return res.data or []
+
+
+def count_today_xp_source(db: Client, device_id: str, source: str) -> int:
+    from datetime import date
+    res = (
+        db.table("xp_log")
+        .select("id", count="exact")
+        .eq("device_id", device_id)
+        .eq("source", source)
+        .gte("created_at", date.today().isoformat())
+        .execute()
+    )
+    return res.count or 0
+
+
+def get_today_session_count(db: Client, device_id: str) -> int:
+    """Count distinct sessions that started today."""
+    from datetime import date
+    res = (
+        db.table("events")
+        .select("session_id")
+        .eq("device_id", device_id)
+        .eq("event_type", "SessionStart")
+        .gte("received_at", date.today().isoformat())
+        .execute()
+    )
+    unique = {r["session_id"] for r in (res.data or []) if r.get("session_id")}
+    return len(unique)
+
+
+def get_session_start_time(db: Client, device_id: str, session_id: str | None) -> datetime | None:
+    """Return the received_at timestamp of the SessionStart for this session."""
+    if not session_id:
+        return None
+    res = (
+        db.table("events")
+        .select("received_at")
+        .eq("device_id", device_id)
+        .eq("session_id", session_id)
+        .eq("event_type", "SessionStart")
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return None
+    ts = res.data[0]["received_at"]
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return None
