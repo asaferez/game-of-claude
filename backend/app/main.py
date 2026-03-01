@@ -3,7 +3,7 @@ Game of Claude — FastAPI backend
 """
 import logging
 import os
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Depends, Request
@@ -16,9 +16,13 @@ from .db import (
     get_client, get_device, get_stats, get_quest_progress,
     award_xp, upsert_stats, upsert_quest_progress,
     log_raw_event, is_already_processed, make_source_key,
-    get_recent_events,
+    get_recent_events, get_today_session_count, count_today_xp_source,
+    get_session_start_time,
 )
-from .engine.xp import compute_xp, compute_level, xp_for_level, level_title
+from .engine.xp import (
+    compute_xp, compute_level, xp_for_level, level_title,
+    parse_commit_stats, extract_file_extension,
+)
 from .engine.streak import compute_streak_xp
 from .engine.quests import QUESTS, QUEST_BY_ID, get_counter_value, quests_to_check_for_event
 from .models import HookEvent, DeviceRegister, ProfilePatch
@@ -105,25 +109,39 @@ def ingest_event(request: Request, body: HookEvent, device_id: str = Depends(req
     quest_progress = get_quest_progress(db, device_id)
     completions: list[dict] = []
 
-    # One-time first-session bonus: hooks are working, player is in the game
+    # One-time first-session bonus
     if body.hook_event_name == "SessionStart" and stats.get("total_sessions", 0) == 0:
         award_xp(db, device_id, "first_session", 10)
         upsert_stats(db, device_id, {"total_xp": (stats.get("total_xp") or 0) + 10})
         stats = get_stats(db, device_id)
 
+    # ── Raw stat capture: file extensions from Edit/Write ─────────────────────
+    if body.hook_event_name == "PostToolUse" and body.tool_name in ("Edit", "Write"):
+        _track_file_extension(db, device_id, stats, body.tool_input or {})
+        stats = get_stats(db, device_id)  # refresh after potential extension update
+
     xp_amount, xp_source = compute_xp(body.model_dump())
 
+    # Cap daily commit XP but keep xp_source so stat counters still update
     if xp_source == "commit":
-        session_commits = _count_session_commits(db, device_id)
-        if session_commits >= 3:
-            xp_amount, xp_source = 0, ""
+        if _count_today_commits(db, device_id) >= 10:
+            xp_amount = 0
+
+    # Always update stat counters when there's a source — decoupled from XP
+    if xp_source:
+        stats = _update_running_totals(db, device_id, stats, xp_source)
+
+    # ── Raw stat capture: commit insertions from git output ───────────────────
+    if xp_source == "commit":
+        _track_commit_insertions(db, device_id, stats, body.tool_response or {})
 
     if xp_amount > 0:
         award_xp(db, device_id, xp_source, xp_amount)
         new_total_xp = (stats.get("total_xp") or 0) + xp_amount
         upsert_stats(db, device_id, {"total_xp": new_total_xp})
-        stats = _update_running_totals(db, device_id, stats, xp_source)
         stats["total_xp"] = new_total_xp
+
+    if xp_source:
         completions += _check_quests(db, device_id, stats, quest_progress, xp_source, today)
         quest_progress = get_quest_progress(db, device_id)
 
@@ -169,9 +187,19 @@ def get_profile(profile_device_id: str):
         "xp_to_next_level": next_level_xp - current_level_xp,
         "current_streak": stats.get("current_streak", 0),
         "longest_streak": stats.get("longest_streak", 0),
+        # career stats
         "total_commits": stats.get("total_commits", 0),
         "total_test_passes": stats.get("total_test_passes", 0),
         "total_sessions": stats.get("total_sessions", 0),
+        "total_branches": stats.get("total_branches", 0),
+        "total_prs": stats.get("total_prs", 0),
+        "total_merged_prs": stats.get("total_merged_prs", 0),
+        "total_insertions": stats.get("total_insertions", 0),
+        "total_session_minutes": stats.get("total_session_minutes", 0),
+        "unique_extensions": len(stats.get("file_extensions") or []),
+        # today
+        "commits_today": count_today_xp_source(db, profile_device_id, "commit"),
+        "sessions_today": get_today_session_count(db, profile_device_id),
         "quests": _build_quest_states(stats, quest_progress, today),
         "member_since": device.get("created_at", ""),
     }
@@ -195,7 +223,7 @@ def get_activity(profile_device_id: str):
     if not get_device(db, profile_device_id):
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    from datetime import datetime, timedelta
+    from datetime import timedelta
     since = (datetime.utcnow() - timedelta(days=365)).date().isoformat()
     rows = (
         db.table("xp_log")
@@ -207,7 +235,7 @@ def get_activity(profile_device_id: str):
 
     counts: dict[str, int] = {}
     for row in rows.data:
-        day = row["created_at"][:10]  # "YYYY-MM-DD"
+        day = row["created_at"][:10]
         counts[day] = counts.get(day, 0) + 1
 
     return {"activity": counts}
@@ -289,7 +317,6 @@ def get_leaderboard():
         dev = device_map.get(row["device_id"])
         if not dev:
             continue
-        # show_on_leaderboard defaults to True if column not yet present
         if not dev.get("show_on_leaderboard", True):
             continue
         result.append({
@@ -318,7 +345,8 @@ def delete_me(device_id: str = Depends(require_device)):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _count_session_commits(db, device_id: str) -> int:
+def _count_today_commits(db, device_id: str) -> int:
+    """Count XP-earning commits logged today (for daily cap)."""
     res = db.table("xp_log").select("id", count="exact").eq(
         "device_id", device_id
     ).eq("source", "commit").gte("created_at", date.today().isoformat()).execute()
@@ -333,15 +361,39 @@ def _update_running_totals(db, device_id: str, stats: dict, xp_source: str) -> d
         updates["total_test_passes"] = (stats.get("total_test_passes") or 0) + 1
     elif xp_source == "pr":
         updates["total_prs"] = (stats.get("total_prs") or 0) + 1
+    elif xp_source == "merged_pr":
+        updates["total_merged_prs"] = (stats.get("total_merged_prs") or 0) + 1
+    elif xp_source == "branch":
+        updates["total_branches"] = (stats.get("total_branches") or 0) + 1
     if updates:
         upsert_stats(db, device_id, updates)
         return {**stats, **updates}
     return stats
 
 
+def _track_file_extension(db, device_id: str, stats: dict, tool_input: dict) -> None:
+    """Extract file extension from Edit/Write event and add to user's extension set."""
+    ext = extract_file_extension(tool_input.get("file_path", ""))
+    if not ext:
+        return
+    extensions = list(stats.get("file_extensions") or [])
+    if ext not in extensions:
+        extensions.append(ext)
+        upsert_stats(db, device_id, {"file_extensions": extensions})
+
+
+def _track_commit_insertions(db, device_id: str, stats: dict, tool_response: dict) -> None:
+    """Parse git commit stdout and accumulate total_insertions."""
+    commit_stats = parse_commit_stats(tool_response.get("stdout", ""))
+    insertions = commit_stats.get("insertions", 0)
+    if insertions > 0:
+        new_total = (stats.get("total_insertions") or 0) + insertions
+        upsert_stats(db, device_id, {"total_insertions": new_total})
+
+
 def _handle_session_end(db, device_id, stats, body, today, quest_progress) -> list[dict]:
     completions: list[dict] = []
-    session_commits = _count_session_commits(db, device_id)
+    session_commits = _count_today_commits(db, device_id)
 
     last_date_str = stats.get("last_session_date")
     last_date = date.fromisoformat(last_date_str) if last_date_str else None
@@ -358,6 +410,11 @@ def _handle_session_end(db, device_id, stats, body, today, quest_progress) -> li
         "total_sessions": total_sessions,
     }
 
+    # Session duration
+    session_mins = _compute_session_duration(db, device_id, body.session_id)
+    if session_mins > 0:
+        stat_updates["total_session_minutes"] = (stats.get("total_session_minutes") or 0) + session_mins
+
     if streak_xp > 0:
         award_xp(db, device_id, "streak", streak_xp)
         total_xp += streak_xp
@@ -369,19 +426,26 @@ def _handle_session_end(db, device_id, stats, body, today, quest_progress) -> li
         stat_updates["total_xp"] = total_xp
         merged = {**stats, **stat_updates}
         completions += _check_quests(db, device_id, merged, quest_progress, "session_commit", today)
-        # Sync back: _check_quests may have added quest XP to merged["total_xp"]
         total_xp = merged["total_xp"]
         stat_updates["total_xp"] = total_xp
 
     if streak_xp > 0:
         merged = {**stats, **stat_updates}
         completions += _check_quests(db, device_id, merged, quest_progress, "streak", today)
-        # Sync back: _check_quests may have added quest XP to merged["total_xp"]
         total_xp = merged["total_xp"]
         stat_updates["total_xp"] = total_xp
 
     upsert_stats(db, device_id, stat_updates)
     return completions
+
+
+def _compute_session_duration(db, device_id: str, session_id: str | None) -> int:
+    """Return session length in minutes, capped at 8h to ignore outliers."""
+    start_time = get_session_start_time(db, device_id, session_id)
+    if not start_time:
+        return 0
+    minutes = int((datetime.now(timezone.utc) - start_time).total_seconds() / 60)
+    return max(0, min(minutes, 480))
 
 
 def _check_quests(db, device_id, stats, quest_progress, event_source, today) -> list[dict]:

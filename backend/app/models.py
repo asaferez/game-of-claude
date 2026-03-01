@@ -26,9 +26,10 @@ class HookEvent(BaseModel):
     @field_validator("session_id")
     @classmethod
     def validate_session_id(cls, v):
-        if v is not None:
-            _validate_uuid4(v)
-        return v
+        # Accept any non-empty string — Claude Code may use formats other than UUID4
+        if v is not None and len(v) > 200:
+            raise ValueError("session_id too long")
+        return v if v else None
 
 
 class DeviceRegister(BaseModel):

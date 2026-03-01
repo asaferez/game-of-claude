@@ -67,6 +67,7 @@ def quests_to_check_for_event(event_source: str) -> list[Quest]:
         "streak":         ["prog_streak_7", "prog_streak_30"],
         "session_commit": ["daily_code_today"],
         "pr":             ["prog_pr_maker", "prog_pr_machine"],
+        "merged_pr":      ["prog_pr_maker", "prog_pr_machine"],
         "file_extension": ["craft_polyglot"],
     }
     ids = relevant.get(event_source, [])

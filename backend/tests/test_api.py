@@ -204,7 +204,7 @@ class TestTotalXpAccumulation:
         app_client["get_stats"].return_value = _make_stats(device_id, xp=initial_xp)
 
         # _count_session_commits uses db directly — patch it to return 0 so commit XP fires
-        with patch("app.main._count_session_commits", return_value=0):
+        with patch("app.main._count_today_commits", return_value=0):
             res = c.post(
                 "/api/events",
                 json=self._commit_event(device_id),
