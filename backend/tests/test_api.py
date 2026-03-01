@@ -3,7 +3,7 @@ API integration tests — mocks all DB calls at the app.main import level.
 Runs without a live Supabase connection.
 """
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 import pytest
 from fastapi.testclient import TestClient
 
@@ -172,6 +172,109 @@ class TestEvents:
         )
         assert res.status_code == 200
         assert res.json()["status"] == "duplicate"
+
+
+# ── XP accumulation (total_xp bug regression) ────────────────────────────────
+
+class TestTotalXpAccumulation:
+    def _commit_event(self, device_id):
+        return {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git commit -m 'fix: something'"},
+            "tool_response": {"exit_code": 0},
+            "session_id": str(uuid.uuid4()),
+        }
+
+    def _test_pass_event(self, device_id):
+        return {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest tests/"},
+            "tool_response": {"exit_code": 0},
+            "session_id": str(uuid.uuid4()),
+        }
+
+    def test_commit_event_updates_total_xp(self, app_client):
+        """Commit XP (+15) must be persisted to total_xp in user_stats."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        initial_xp = 100
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = _make_stats(device_id, xp=initial_xp)
+
+        # _count_session_commits uses db directly — patch it to return 0 so commit XP fires
+        with patch("app.main._count_session_commits", return_value=0):
+            res = c.post(
+                "/api/events",
+                json=self._commit_event(device_id),
+                headers={"Authorization": f"Bearer {device_id}"},
+            )
+
+        assert res.status_code == 200
+        assert res.json()["xp_awarded"] == 15
+
+        upsert_calls = app_client["upsert_stats"].call_args_list
+        total_xp_values = [
+            c.args[2]["total_xp"]
+            for c in upsert_calls
+            if len(c.args) > 2 and "total_xp" in c.args[2]
+        ]
+        assert any(v == initial_xp + 15 for v in total_xp_values), (
+            f"Expected total_xp={initial_xp + 15} in upsert_stats calls, got: {total_xp_values}"
+        )
+
+    def test_test_pass_event_updates_total_xp(self, app_client):
+        """test_pass XP (+8) must be persisted to total_xp in user_stats."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        initial_xp = 50
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = _make_stats(device_id, xp=initial_xp)
+
+        res = c.post(
+            "/api/events",
+            json=self._test_pass_event(device_id),
+            headers={"Authorization": f"Bearer {device_id}"},
+        )
+        assert res.status_code == 200
+        assert res.json()["xp_awarded"] == 8
+
+        upsert_calls = app_client["upsert_stats"].call_args_list
+        total_xp_values = [
+            c.args[2]["total_xp"]
+            for c in upsert_calls
+            if len(c.args) > 2 and "total_xp" in c.args[2]
+        ]
+        assert any(v == initial_xp + 8 for v in total_xp_values), (
+            f"Expected total_xp={initial_xp + 8} in upsert_stats calls, got: {total_xp_values}"
+        )
+
+    def test_non_xp_event_does_not_set_total_xp(self, app_client):
+        """SessionStart with no XP should not write total_xp (beyond existing stats)."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = _make_stats(device_id, xp=200)
+
+        res = c.post(
+            "/api/events",
+            json={"hook_event_name": "SessionStart", "session_id": str(uuid.uuid4())},
+            headers={"Authorization": f"Bearer {device_id}"},
+        )
+        assert res.status_code == 200
+        assert res.json()["xp_awarded"] == 0
+
+        upsert_calls = app_client["upsert_stats"].call_args_list
+        total_xp_values = [
+            c.args[2]["total_xp"]
+            for c in upsert_calls
+            if len(c.args) > 2 and "total_xp" in c.args[2]
+        ]
+        # No xp_amount > 0, so no total_xp write from the main XP block
+        assert not total_xp_values, (
+            f"Expected no total_xp upsert for zero-XP event, got: {total_xp_values}"
+        )
 
 
 # ── Profile ───────────────────────────────────────────────────────────────────

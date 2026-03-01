@@ -117,7 +117,10 @@ def ingest_event(request: Request, body: HookEvent, device_id: str = Depends(req
 
     if xp_amount > 0:
         award_xp(db, device_id, xp_source, xp_amount)
+        new_total_xp = (stats.get("total_xp") or 0) + xp_amount
+        upsert_stats(db, device_id, {"total_xp": new_total_xp})
         stats = _update_running_totals(db, device_id, stats, xp_source)
+        stats["total_xp"] = new_total_xp
         completions += _check_quests(db, device_id, stats, quest_progress, xp_source, today)
         quest_progress = get_quest_progress(db, device_id)
 
@@ -349,6 +352,8 @@ def _check_quests(db, device_id, stats, quest_progress, event_source, today) -> 
             if not already_done:
                 upsert_quest_progress(db, device_id, quest.id, {"completed_at": "now()"})
                 award_xp(db, device_id, "quest_complete", quest.xp_reward)
+                stats["total_xp"] = (stats.get("total_xp") or 0) + quest.xp_reward
+                upsert_stats(db, device_id, {"total_xp": stats["total_xp"]})
                 completions.append({"quest_id": quest.id, "quest_name": quest.name, "xp_awarded": quest.xp_reward})
 
     return completions

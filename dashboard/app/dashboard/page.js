@@ -4,6 +4,7 @@ import LevelRing from "@/components/LevelRing";
 import XPBar from "@/components/XPBar";
 import QuestCard from "@/components/QuestCard";
 import ActivityHeatmap from "@/components/ActivityHeatmap";
+import AutoRefresh from "@/components/AutoRefresh";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ??
@@ -11,7 +12,7 @@ const API_BASE =
 
 async function fetchProfile(deviceId) {
   const res = await fetch(`${API_BASE}/api/profile/${deviceId}`, {
-    next: { revalidate: 30 },
+    next: { revalidate: 10 },
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error("Failed to load profile");
@@ -67,6 +68,7 @@ export default async function DashboardPage({ searchParams }) {
 
   return (
     <main className="min-h-screen bg-surface px-4 py-10 max-w-2xl mx-auto">
+      <AutoRefresh intervalMs={30_000} />
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
         <div className="flex-1">
