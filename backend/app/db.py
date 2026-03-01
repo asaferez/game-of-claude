@@ -1,6 +1,7 @@
 import os
 import logging
 import hashlib
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from supabase import create_client, Client
 
@@ -62,3 +63,15 @@ def upsert_quest_progress(db: Client, device_id: str, quest_id: str, updates: di
 
 def log_raw_event(db: Client, device_id: str, session_id: str | None, event_type: str, data: dict) -> None:
     db.table("events").insert({"device_id": device_id, "session_id": session_id, "event_type": event_type, "data": data}).execute()
+
+
+def get_recent_events(db: Client, device_id: str, days: int = 30) -> list[dict]:
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    res = (
+        db.table("events")
+        .select("data, received_at")
+        .eq("device_id", device_id)
+        .gte("received_at", since)
+        .execute()
+    )
+    return res.data or []

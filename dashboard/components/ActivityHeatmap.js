@@ -1,6 +1,6 @@
 "use client";
 
-const WEEKS = 52;
+const WEEKS = 20;
 const DAYS_PER_WEEK = 7;
 
 function getColorClass(count) {
@@ -50,16 +50,18 @@ export default function ActivityHeatmap({ activity = {} }) {
     }
   });
 
+  const CELL = 14; // px per cell + gap
+
   return (
-    <div className="overflow-x-auto">
-      <div className="relative" style={{ minWidth: WEEKS * 14 }}>
+    <div>
+      <div className="relative" style={{ minWidth: WEEKS * CELL }}>
         {/* Month labels */}
         <div className="flex mb-1 ml-0" style={{ paddingLeft: 0 }}>
           {monthMarkers.map(({ wi, label }) => (
             <span
               key={wi}
               className="text-xs text-muted absolute"
-              style={{ left: wi * 14 }}
+              style={{ left: wi * CELL }}
             >
               {label}
             </span>
@@ -73,7 +75,7 @@ export default function ActivityHeatmap({ activity = {} }) {
                 <div
                   key={date}
                   title={count ? `${date}: ${count} events` : date}
-                  className={`w-3 h-3 rounded-sm ${getColorClass(count)}`}
+                  className={`w-3.5 h-3.5 rounded-sm ${getColorClass(count)}`}
                 />
               ))}
             </div>

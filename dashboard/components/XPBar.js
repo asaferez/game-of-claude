@@ -26,7 +26,7 @@ export default function XPBar({ xpInLevel, xpToNextLevel }) {
           className="h-full rounded-full"
           style={{
             width: "0%",
-            background: "linear-gradient(90deg, #6d28d9, #8b5cf6)",
+            background: "linear-gradient(90deg, #D4632A, #E8834A)",
           }}
         />
       </div>

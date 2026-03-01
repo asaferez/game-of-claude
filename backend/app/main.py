@@ -16,6 +16,7 @@ from .db import (
     get_client, get_device, get_stats, get_quest_progress,
     award_xp, upsert_stats, upsert_quest_progress,
     log_raw_event, is_already_processed, make_source_key,
+    get_recent_events,
 )
 from .engine.xp import compute_xp, compute_level, xp_for_level, level_title
 from .engine.streak import compute_streak_xp
@@ -208,6 +209,52 @@ def get_activity(profile_device_id: str):
         counts[day] = counts.get(day, 0) + 1
 
     return {"activity": counts}
+
+
+# ── Coding stats ───────────────────────────────────────────────────────────────
+
+@app.get("/api/stats/{profile_device_id}")
+@limiter.limit("30/minute")
+def get_coding_stats(request: Request, profile_device_id: str):
+    """Aggregate raw hook events into top projects, tool usage, and peak coding hour."""
+    db = get_client()
+    if not get_device(db, profile_device_id):
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    rows = get_recent_events(db, profile_device_id, days=30)
+
+    projects: dict[str, int] = {}
+    tools: dict[str, int] = {}
+    hours: dict[int, int] = {}
+
+    for row in rows:
+        data = row.get("data") or {}
+        received_at = row.get("received_at", "")
+
+        cwd = data.get("cwd")
+        if cwd:
+            parts = [p for p in cwd.split("/") if p]
+            if parts:
+                project = parts[-1]
+                projects[project] = projects.get(project, 0) + 1
+
+        tool = data.get("tool_name")
+        if tool:
+            tools[tool] = tools.get(tool, 0) + 1
+
+        if len(received_at) >= 13:
+            hour = int(received_at[11:13])
+            hours[hour] = hours.get(hour, 0) + 1
+
+    top_projects = sorted(projects.items(), key=lambda x: x[1], reverse=True)[:5]
+    top_tools = sorted(tools.items(), key=lambda x: x[1], reverse=True)[:5]
+    peak_hour = max(hours, key=hours.get) if hours else None
+
+    return {
+        "top_projects": [{"name": k, "count": v} for k, v in top_projects],
+        "tool_usage": [{"tool": k, "count": v} for k, v in top_tools],
+        "peak_hour": peak_hour,
+    }
 
 
 # ── Leaderboard ───────────────────────────────────────────────────────────────
