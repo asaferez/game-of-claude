@@ -2,7 +2,7 @@
 
 Gamification layer for [Claude Code](https://claude.ai/code). Level up and complete quests while you ship real work — rewarded for good coding practices, never for raw volume.
 
-**[Install](https://game-of-claude.vercel.app/install)** · **[Leaderboard](https://game-of-claude.vercel.app/leaderboard)**
+**[Install](https://gameofclaude.online/install)** · **[Leaderboard](https://gameofclaude.online/leaderboard)**
 
 ---
 

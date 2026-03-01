@@ -22,7 +22,10 @@ function mergeHooks(existing, newHooks) {
   settings.hooks = settings.hooks ?? {};
   for (const [event, entries] of Object.entries(newHooks)) {
     const filtered = (settings.hooks[event] ?? []).filter(
-      (e) => !e.hooks?.some((h) => h.url?.includes("gameofclaude.dev"))
+      (e) => !e.hooks?.some((h) =>
+        h.url?.includes("gameofclaude") ||
+        h.url?.includes("game-of-claude-production.up.railway.app")
+      )
     );
     settings.hooks[event] = [...filtered, ...entries];
   }

@@ -33,7 +33,7 @@ jobs:
       - run: cd dashboard && npm ci
       - run: cd dashboard && npm run build
         env:
-          NEXT_PUBLIC_API_BASE: https://game-of-claude-production.up.railway.app
+          NEXT_PUBLIC_API_BASE: https://api.gameofclaude.online
 
   cli-pack:
     name: CLI pack check

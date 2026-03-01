@@ -11,7 +11,10 @@ export function stop() {
   let removed = 0;
   for (const [event, entries] of Object.entries(settings.hooks)) {
     const before = entries.length;
-    settings.hooks[event] = entries.filter((e) => !e.hooks?.some((h) => h.url?.includes("gameofclaude.dev")));
+    settings.hooks[event] = entries.filter((e) => !e.hooks?.some((h) =>
+      h.url?.includes("gameofclaude") ||
+      h.url?.includes("game-of-claude-production.up.railway.app")
+    ));
     removed += before - settings.hooks[event].length;
     if (settings.hooks[event].length === 0) delete settings.hooks[event];
   }
