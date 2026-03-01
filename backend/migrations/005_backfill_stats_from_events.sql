@@ -17,6 +17,7 @@ DECLARE
   v_total_sessions       int;
   v_total_session_minutes int;
   v_file_extensions      text[];
+  v_rows                 int;
 
 BEGIN
 
@@ -131,5 +132,7 @@ BEGIN
     file_extensions       = v_file_extensions
   WHERE device_id = v_device_id;
 
-  RAISE NOTICE 'Done. % row(s) updated.', ROW_COUNT;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  RAISE NOTICE 'Done. % row(s) updated.', v_rows;
+
 END $$;
