@@ -7,4 +7,4 @@ ALTER TABLE user_stats
   ADD COLUMN IF NOT EXISTS total_merged_prs     INT         NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS total_insertions     INT         NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS total_session_minutes INT        NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS file_extensions      JSONB       NOT NULL DEFAULT '[]'::jsonb;
+  ADD COLUMN IF NOT EXISTS file_extensions      text[]      NOT NULL DEFAULT '{}';

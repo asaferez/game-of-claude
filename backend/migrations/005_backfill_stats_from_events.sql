@@ -16,7 +16,7 @@ DECLARE
   v_total_insertions     int;
   v_total_sessions       int;
   v_total_session_minutes int;
-  v_file_extensions      jsonb;
+  v_file_extensions      text[];
 
 BEGIN
 
@@ -83,7 +83,7 @@ BEGIN
   -- ── File extensions from Edit/Write ──────────────────────────────────────
 
   SELECT COALESCE(
-    (SELECT to_jsonb(ARRAY_AGG(DISTINCT ext ORDER BY ext))
+    (SELECT ARRAY_AGG(DISTINCT ext ORDER BY ext)
      FROM (
        SELECT LOWER(
          (regexp_match(
@@ -101,7 +101,7 @@ BEGIN
      ) x
      WHERE ext IS NOT NULL
     ),
-    '[]'::jsonb
+    ARRAY[]::text[]
   ) INTO v_file_extensions;
 
   -- ── Preview (raise notice so you can see before the update fires) ────────
