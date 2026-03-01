@@ -320,10 +320,16 @@ def _handle_session_end(db, device_id, stats, body, today, quest_progress) -> li
         stat_updates["total_xp"] = total_xp
         merged = {**stats, **stat_updates}
         completions += _check_quests(db, device_id, merged, quest_progress, "session_commit", today)
+        # Sync back: _check_quests may have added quest XP to merged["total_xp"]
+        total_xp = merged["total_xp"]
+        stat_updates["total_xp"] = total_xp
 
     if streak_xp > 0:
         merged = {**stats, **stat_updates}
         completions += _check_quests(db, device_id, merged, quest_progress, "streak", today)
+        # Sync back: _check_quests may have added quest XP to merged["total_xp"]
+        total_xp = merged["total_xp"]
+        stat_updates["total_xp"] = total_xp
 
     upsert_stats(db, device_id, stat_updates)
     return completions
