@@ -1,10 +1,13 @@
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import LevelRing from "@/components/LevelRing";
 import XPBar from "@/components/XPBar";
 import QuestCard from "@/components/QuestCard";
 import ActivityHeatmap from "@/components/ActivityHeatmap";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "https://api.gameofclaude.dev";
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE ??
+  "https://game-of-claude-production.up.railway.app";
 
 async function fetchProfile(deviceId) {
   const res = await fetch(`${API_BASE}/api/profile/${deviceId}`, {
@@ -25,6 +28,21 @@ async function fetchActivity(deviceId) {
     return data.activity ?? {};
   } catch {
     return {};
+  }
+}
+
+export async function generateMetadata({ searchParams }) {
+  const id = (await searchParams).id;
+  if (!id) return { title: "Game of Claude" };
+  try {
+    const profile = await fetchProfile(id);
+    if (!profile) return { title: "Profile not found — Game of Claude" };
+    return {
+      title: `${profile.character_name} · Lvl ${profile.level} ${profile.level_title}`,
+      description: `${profile.total_xp.toLocaleString()} XP · ${profile.current_streak}d streak · ${profile.total_commits} commits`,
+    };
+  } catch {
+    return { title: "Game of Claude" };
   }
 }
 
@@ -94,6 +112,13 @@ export default async function DashboardPage({ searchParams }) {
           accent
         />
         <StatCard label="Longest streak" value={`${profile.longest_streak}d`} />
+        <Link
+          href="/leaderboard"
+          className="bg-card border border-border hover:border-brand/50 rounded-xl p-3 text-center transition-colors"
+        >
+          <div className="text-xl font-bold text-brand-light">↗</div>
+          <div className="text-xs text-muted mt-0.5">Leaderboard</div>
+        </Link>
       </div>
 
       {/* Daily quests */}
@@ -168,9 +193,13 @@ function MissingId() {
       <div className="text-center max-w-sm">
         <div className="text-4xl mb-4">🎮</div>
         <h1 className="text-xl font-bold text-white mb-2">No profile ID</h1>
-        <p className="text-muted text-sm">
+        <p className="text-muted text-sm mb-4">
           Add <code className="text-brand-light">?id=your-device-id</code> to
-          the URL to view a profile.
+          the URL, or{" "}
+          <Link href="/install" className="text-brand-light underline">
+            install game-of-claude
+          </Link>{" "}
+          to get yours.
         </p>
       </div>
     </main>

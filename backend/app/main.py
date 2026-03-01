@@ -1,12 +1,16 @@
 """
 Game of Claude — FastAPI backend
 """
+import logging
 import os
 from datetime import date
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi import FastAPI, Header, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from .db import (
     get_client, get_device, get_stats, get_quest_progress,
@@ -18,19 +22,35 @@ from .engine.streak import compute_streak_xp
 from .engine.quests import QUESTS, QUEST_BY_ID, get_counter_value, quests_to_check_for_event
 from .models import HookEvent, DeviceRegister, ProfilePatch
 
-app = FastAPI(title="Game of Claude API")
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
+limiter = Limiter(key_func=get_remote_address)
+app = FastAPI(title="Game of Claude API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+ALLOWED_ORIGINS = [
+    "https://game-of-claude.vercel.app",
+    "http://localhost:3000",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    try:
+        db = get_client()
+        db.table("devices").select("device_id").limit(1).execute()
+        return {"status": "ok", "db": "ok"}
+    except Exception as e:
+        logger.error("Health check DB failure: %s", e)
+        raise HTTPException(status_code=503, detail="DB unavailable")
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -51,19 +71,22 @@ def require_device(device_id: str = Depends(get_device_id)) -> str:
 # ── Register ──────────────────────────────────────────────────────────────────
 
 @app.post("/api/devices", status_code=201)
-def register_device(body: DeviceRegister):
+@limiter.limit("10/minute")
+def register_device(request: Request, body: DeviceRegister):
     db = get_client()
     if get_device(db, body.device_id):
         return {"status": "already_registered"}
     db.table("devices").insert({"device_id": body.device_id, "character_name": body.character_name}).execute()
     upsert_stats(db, body.device_id, {})
+    logger.info("Device registered: %s (%s)", body.device_id[:8], body.character_name)
     return {"status": "registered"}
 
 
 # ── Ingest events ─────────────────────────────────────────────────────────────
 
 @app.post("/api/events", status_code=200)
-def ingest_event(body: HookEvent, device_id: str = Depends(require_device)):
+@limiter.limit("60/minute")
+def ingest_event(request: Request, body: HookEvent, device_id: str = Depends(require_device)):
     db = get_client()
 
     tool_call_id = str(getattr(body, "tool_call_id", "")) or body.session_id or "unknown"
@@ -98,6 +121,10 @@ def ingest_event(body: HookEvent, device_id: str = Depends(require_device)):
     new_level = compute_level(fresh_stats.get("total_xp", 0))
     if new_level != fresh_stats.get("level", 0):
         upsert_stats(db, device_id, {"level": new_level})
+
+    if xp_amount > 0 or completions:
+        logger.info("Event %s for %s...: +%d XP, %d quests",
+                    body.hook_event_name, device_id[:8], xp_amount, len(completions))
 
     return {"status": "ok", "xp_awarded": xp_amount, "quest_completions": completions}
 
@@ -146,7 +173,7 @@ def update_profile(profile_device_id: str, body: ProfilePatch, device_id: str = 
     return {"status": "updated"}
 
 
-# ── Delete ────────────────────────────────────────────────────────────────────
+# ── Activity heatmap ──────────────────────────────────────────────────────────
 
 @app.get("/api/activity/{profile_device_id}")
 def get_activity(profile_device_id: str):
@@ -173,10 +200,60 @@ def get_activity(profile_device_id: str):
     return {"activity": counts}
 
 
+# ── Leaderboard ───────────────────────────────────────────────────────────────
+
+@app.get("/api/leaderboard")
+def get_leaderboard():
+    """Return top 20 players by total XP. Respects show_on_leaderboard opt-out."""
+    db = get_client()
+    stats_rows = (
+        db.table("user_stats")
+        .select("device_id, total_xp, level, current_streak")
+        .order("total_xp", desc=True)
+        .limit(50)
+        .execute()
+    )
+    if not stats_rows.data:
+        return {"leaderboard": []}
+
+    device_ids = [r["device_id"] for r in stats_rows.data]
+    devices_rows = (
+        db.table("devices")
+        .select("device_id, character_name, show_on_leaderboard")
+        .in_("device_id", device_ids)
+        .execute()
+    )
+    device_map = {r["device_id"]: r for r in (devices_rows.data or [])}
+
+    result = []
+    for row in stats_rows.data:
+        dev = device_map.get(row["device_id"])
+        if not dev:
+            continue
+        # show_on_leaderboard defaults to True if column not yet present
+        if not dev.get("show_on_leaderboard", True):
+            continue
+        result.append({
+            "device_id": row["device_id"],
+            "character_name": dev["character_name"],
+            "total_xp": row.get("total_xp", 0),
+            "level": row.get("level", 0),
+            "level_title": level_title(row.get("level", 0)),
+            "current_streak": row.get("current_streak", 0),
+        })
+        if len(result) >= 20:
+            break
+
+    return {"leaderboard": result}
+
+
+# ── Delete ────────────────────────────────────────────────────────────────────
+
 @app.delete("/api/me", status_code=200)
 def delete_me(device_id: str = Depends(require_device)):
     db = get_client()
     db.table("devices").delete().eq("device_id", device_id).execute()
+    logger.info("Device deleted: %s...", device_id[:8])
     return {"status": "deleted", "message": "All your data has been permanently deleted."}
 
 
