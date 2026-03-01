@@ -17,6 +17,7 @@ class HookEvent(BaseModel):
     hook_event_name: str
     session_id: Optional[str] = None
     tool_name: Optional[str] = None
+    tool_use_id: Optional[str] = None   # Claude Code sends this; used for dedup
     tool_input: Optional[dict[str, Any]] = None
     tool_response: Optional[dict[str, Any]] = None
     cwd: Optional[str] = None

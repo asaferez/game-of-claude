@@ -97,8 +97,10 @@ def register_device(request: Request, body: DeviceRegister):
 def ingest_event(request: Request, body: HookEvent, device_id: str = Depends(require_device)):
     db = get_client()
 
-    tool_call_id = str(getattr(body, "tool_call_id", "")) or body.session_id or "unknown"
-    source_key = make_source_key(body.session_id or "no-session", f"{body.hook_event_name}:{tool_call_id}")
+    # tool_use_id is unique per tool call; fall back to session_id only for
+    # session-level events (SessionStart/SessionEnd) which have no tool_use_id.
+    tool_use_id = body.tool_use_id or body.session_id or "unknown"
+    source_key = make_source_key(body.session_id or "no-session", f"{body.hook_event_name}:{tool_use_id}")
     if is_already_processed(db, source_key):
         return {"status": "duplicate"}
 
@@ -383,8 +385,13 @@ def _track_file_extension(db, device_id: str, stats: dict, tool_input: dict) -> 
 
 
 def _track_commit_insertions(db, device_id: str, stats: dict, tool_response: dict) -> None:
-    """Parse git commit stdout and accumulate total_insertions."""
-    commit_stats = parse_commit_stats(tool_response.get("stdout", ""))
+    """Parse git commit output and accumulate total_insertions.
+
+    Claude Code sends Bash output as 'output' (combined stdout) in PostToolUse
+    hook payloads. Accept both 'output' and 'stdout' for forward-compatibility.
+    """
+    output = tool_response.get("output") or tool_response.get("stdout") or ""
+    commit_stats = parse_commit_stats(output)
     insertions = commit_stats.get("insertions", 0)
     if insertions > 0:
         new_total = (stats.get("total_insertions") or 0) + insertions

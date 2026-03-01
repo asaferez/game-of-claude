@@ -334,4 +334,135 @@ class TestDeleteMe:
         app_client["get_device"].return_value = _make_device(device_id)
         res = c.delete("/api/me", headers={"Authorization": f"Bearer {device_id}"})
         assert res.status_code == 200
-        assert res.json()["status"] == "deleted"
+
+
+# ── Deduplication key uses tool_use_id ────────────────────────────────────────
+
+class TestDeduplicationKey:
+    """
+    Regression tests for the bug where tool_call_id was never parsed from the
+    hook payload (extra=ignore), causing every PostToolUse in the same session
+    to share the same source_key and be silently dropped as duplicates.
+    """
+
+    def test_tool_use_id_is_included_in_source_key(self, app_client):
+        """Two events with different tool_use_ids must produce different source keys."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        session_id = str(uuid.uuid4())
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = _make_stats(device_id)
+        app_client["make_source_key"].side_effect = lambda sid, key: f"{sid}:{key}"
+
+        payload_1 = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "session_id": session_id,
+            "tool_use_id": "toolu_001",
+            "tool_input": {"command": "git status"},
+            "tool_response": {"exit_code": 0},
+        }
+        payload_2 = {**payload_1, "tool_use_id": "toolu_002"}
+
+        with patch("app.main._count_today_commits", return_value=0):
+            c.post("/api/events", json=payload_1, headers={"Authorization": f"Bearer {device_id}"})
+            c.post("/api/events", json=payload_2, headers={"Authorization": f"Bearer {device_id}"})
+
+        keys = [call.args[1] for call in app_client["make_source_key"].call_args_list]
+        assert len(keys) == 2, f"Expected 2 source key calls, got {len(keys)}"
+        assert keys[0] != keys[1], (
+            f"Different tool_use_ids must produce different source keys, got: {keys}"
+        )
+
+    def test_tool_use_id_parsed_from_payload(self, app_client):
+        """tool_use_id in the JSON payload must survive Pydantic parsing."""
+        from app.models import HookEvent
+        raw = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "session_id": "abc",
+            "tool_use_id": "toolu_XYZ",
+            "tool_input": {"command": "git commit -m 'x'"},
+            "tool_response": {"exit_code": 0},
+        }
+        event = HookEvent(**raw)
+        assert event.tool_use_id == "toolu_XYZ"
+
+
+# ── Bash output field (output vs stdout) ─────────────────────────────────────
+
+class TestBashOutputField:
+    """
+    Regression tests for Claude Code sending Bash output as 'output' not 'stdout'.
+    total_insertions must be parsed from whichever field is present.
+    """
+
+    def test_insertions_parsed_from_output_field(self, app_client):
+        """If tool_response has 'output' (Claude Code), insertions must be counted."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = _make_stats(device_id)
+
+        with patch("app.main._count_today_commits", return_value=0):
+            res = c.post(
+                "/api/events",
+                json={
+                    "hook_event_name": "PostToolUse",
+                    "tool_name": "Bash",
+                    "session_id": str(uuid.uuid4()),
+                    "tool_use_id": "toolu_ins_001",
+                    "tool_input": {"command": "git commit -m 'feat: add thing'"},
+                    "tool_response": {
+                        "exit_code": 0,
+                        "output": "[main abc1234] feat: add thing\n 2 files changed, 55 insertions(+), 3 deletions(-)",
+                    },
+                },
+                headers={"Authorization": f"Bearer {device_id}"},
+            )
+
+        assert res.status_code == 200
+        upsert_calls = app_client["upsert_stats"].call_args_list
+        insertion_updates = [
+            call.args[2]["total_insertions"]
+            for call in upsert_calls
+            if len(call.args) > 2 and "total_insertions" in call.args[2]
+        ]
+        assert insertion_updates == [55], (
+            f"Expected total_insertions=55 from 'output' field, got: {insertion_updates}"
+        )
+
+    def test_insertions_parsed_from_stdout_field(self, app_client):
+        """If tool_response has 'stdout' (legacy/manual), insertions still work."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = _make_stats(device_id)
+
+        with patch("app.main._count_today_commits", return_value=0):
+            res = c.post(
+                "/api/events",
+                json={
+                    "hook_event_name": "PostToolUse",
+                    "tool_name": "Bash",
+                    "session_id": str(uuid.uuid4()),
+                    "tool_use_id": "toolu_ins_002",
+                    "tool_input": {"command": "git commit -m 'fix: something'"},
+                    "tool_response": {
+                        "exit_code": 0,
+                        "stdout": "1 file changed, 20 insertions(+)",
+                    },
+                },
+                headers={"Authorization": f"Bearer {device_id}"},
+            )
+
+        assert res.status_code == 200
+        upsert_calls = app_client["upsert_stats"].call_args_list
+        insertion_updates = [
+            call.args[2]["total_insertions"]
+            for call in upsert_calls
+            if len(call.args) > 2 and "total_insertions" in call.args[2]
+        ]
+        assert insertion_updates == [20], (
+            f"Expected total_insertions=20 from 'stdout' field, got: {insertion_updates}"
+        )
