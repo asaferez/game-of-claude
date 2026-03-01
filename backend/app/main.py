@@ -77,9 +77,10 @@ def register_device(request: Request, body: DeviceRegister):
     if get_device(db, body.device_id):
         return {"status": "already_registered"}
     db.table("devices").insert({"device_id": body.device_id, "character_name": body.character_name}).execute()
-    upsert_stats(db, body.device_id, {})
+    upsert_stats(db, body.device_id, {"total_xp": 25})
+    award_xp(db, body.device_id, "install", 25)
     logger.info("Device registered: %s (%s)", body.device_id[:8], body.character_name)
-    return {"status": "registered"}
+    return {"status": "registered", "xp_awarded": 25}
 
 
 # ── Ingest events ─────────────────────────────────────────────────────────────
@@ -100,6 +101,12 @@ def ingest_event(request: Request, body: HookEvent, device_id: str = Depends(req
     today = date.today()
     quest_progress = get_quest_progress(db, device_id)
     completions: list[dict] = []
+
+    # One-time first-session bonus: hooks are working, player is in the game
+    if body.hook_event_name == "SessionStart" and stats.get("total_sessions", 0) == 0:
+        award_xp(db, device_id, "first_session", 10)
+        upsert_stats(db, device_id, {"total_xp": (stats.get("total_xp") or 0) + 10})
+        stats = get_stats(db, device_id)
 
     xp_amount, xp_source = compute_xp(body.model_dump())
 

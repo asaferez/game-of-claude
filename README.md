@@ -15,7 +15,11 @@ npx game-of-claude install
 1. Enter a character name (no email, no account)
 2. Hooks are written to `~/.claude/settings.json` automatically
 3. Bookmark the dashboard URL it prints
-4. Code as usual — XP flows as you work
+4. **Restart Claude Code** — hooks activate on the next session
+5. Code as usual — XP flows as you work
+
+> **Tip:** For a persistent global binary run `npm install -g game-of-claude` once.
+> Then `game-of-claude status` works anywhere without re-downloading.
 
 ---
 
@@ -34,6 +38,8 @@ game-of-claude delete-data   # permanently delete all your data
 
 | Activity | XP | Why |
 |----------|-----|-----|
+| Install | +25 | Welcome bonus — you're in |
+| First session | +10 | Hooks confirmed working |
 | Git commit | +15 | You shipped something |
 | Test passed | +8 | Quality mindset |
 | Session ended with a commit | +20 | Productive session |

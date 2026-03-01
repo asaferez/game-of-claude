@@ -64,7 +64,8 @@ export async function install() {
   writeFileSync(SETTINGS_FILE, JSON.stringify(mergeHooks(settings, buildHooks(deviceId)), null, 2));
   writeConfig({ device_id: deviceId, character_name: characterName, api_base: API_BASE });
 
-  console.log(`\n✅ You're in the game, ${characterName}!`);
+  console.log(`\n✅ You're in the game, ${characterName}! (+25 XP welcome bonus)`);
   console.log(`\n📊 Dashboard: ${DASHBOARD_BASE}/dashboard?id=${deviceId}`);
-  console.log("   (bookmark this — it's your personal quest board)\n");
+  console.log("   (bookmark this — it's your personal quest board)");
+  console.log("\n🔄 Restart Claude Code now — hooks activate on the next session.\n");
 }
