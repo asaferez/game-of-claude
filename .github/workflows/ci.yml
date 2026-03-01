@@ -44,3 +44,19 @@ jobs:
         with:
           node-version: "20"
       - run: cd packages/cli && npm install && npm pack --dry-run
+
+  deploy-backend:
+    name: Deploy backend to Railway
+    runs-on: ubuntu-latest
+    needs: backend-tests
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install -g @railway/cli
+      - run: railway up --service ${{ vars.RAILWAY_SERVICE_NAME }} --detach
+        working-directory: backend
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
