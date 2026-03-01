@@ -32,6 +32,18 @@ async function fetchActivity(deviceId) {
   }
 }
 
+async function fetchStats(deviceId) {
+  try {
+    const res = await fetch(`${API_BASE}/api/stats/${deviceId}`, {
+      next: { revalidate: 60 },
+    });
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
 export async function generateMetadata({ searchParams }) {
   const id = (await searchParams).id;
   if (!id) return { title: "Game of Claude" };
@@ -51,9 +63,10 @@ export default async function DashboardPage({ searchParams }) {
   const id = (await searchParams).id;
   if (!id) return <MissingId />;
 
-  const [profile, activity] = await Promise.all([
+  const [profile, activity, stats] = await Promise.all([
     fetchProfile(id),
     fetchActivity(id),
+    fetchStats(id),
   ]);
 
   if (!profile) notFound();
@@ -121,6 +134,21 @@ export default async function DashboardPage({ searchParams }) {
           <div className="text-xl font-bold text-brand-light">↗</div>
           <div className="text-xs text-muted mt-0.5">Leaderboard</div>
         </Link>
+        <a
+          href="https://claude.ai/settings/usage"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="col-span-3 bg-card border border-border hover:border-brand/50 rounded-xl p-3 flex items-center justify-between transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-base">⚡</span>
+            <div>
+              <div className="text-xs font-semibold text-white text-left">Claude Plan Usage</div>
+              <div className="text-xs text-muted">Session &amp; weekly limits</div>
+            </div>
+          </div>
+          <div className="text-xs text-brand-light">↗</div>
+        </a>
       </div>
 
       {/* Daily quests */}
@@ -159,6 +187,51 @@ export default async function DashboardPage({ searchParams }) {
         </div>
       </section>
 
+      {/* Coding stats */}
+      {stats && (stats.top_projects.length > 0 || stats.tool_usage.length > 0) && (
+        <section className="mb-6">
+          <h2 className="text-sm font-semibold text-muted uppercase tracking-wider mb-3">
+            Coding Stats{" "}
+            <span className="normal-case font-normal">(last 30 days)</span>
+          </h2>
+          <div className="grid grid-cols-2 gap-3">
+            {stats.top_projects.length > 0 && (
+              <div className="bg-card border border-border rounded-2xl p-4">
+                <div className="text-xs text-muted mb-2">Top Projects</div>
+                <MiniBarList
+                  items={stats.top_projects.map((p) => ({
+                    label: p.name,
+                    count: p.count,
+                  }))}
+                />
+              </div>
+            )}
+            {stats.tool_usage.length > 0 && (
+              <div className="bg-card border border-border rounded-2xl p-4">
+                <div className="text-xs text-muted mb-2">Tools Used</div>
+                <MiniBarList
+                  items={stats.tool_usage.map((t) => ({
+                    label: t.tool,
+                    count: t.count,
+                  }))}
+                />
+              </div>
+            )}
+          </div>
+          {stats.peak_hour != null && (
+            <div className="mt-3 bg-card border border-border rounded-2xl p-4 flex items-center gap-3">
+              <span className="text-2xl">⏰</span>
+              <div>
+                <div className="text-sm font-semibold text-white">
+                  Peak hour: {formatHour(stats.peak_hour)}
+                </div>
+                <div className="text-xs text-muted">Most active coding time (UTC)</div>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Completed quests */}
       {completedProgressiveQuests.length > 0 && (
         <section>
@@ -187,6 +260,34 @@ function StatCard({ label, value, accent }) {
       <div className="text-xs text-muted mt-0.5">{label}</div>
     </div>
   );
+}
+
+function MiniBarList({ items }) {
+  const max = Math.max(...items.map((i) => i.count), 1);
+  return (
+    <div className="flex flex-col gap-1.5">
+      {items.map(({ label, count }) => (
+        <div key={label}>
+          <div className="flex justify-between text-xs mb-0.5">
+            <span className="text-white truncate max-w-[80%]">{label}</span>
+            <span className="text-muted">{count}</span>
+          </div>
+          <div className="h-1 bg-border rounded-full overflow-hidden">
+            <div
+              className="h-full bg-brand rounded-full"
+              style={{ width: `${(count / max) * 100}%` }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatHour(h) {
+  const ampm = h >= 12 ? "PM" : "AM";
+  const display = h % 12 || 12;
+  return `${display}:00 ${ampm}`;
 }
 
 function MissingId() {

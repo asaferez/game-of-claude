@@ -33,7 +33,7 @@ export default function LevelRing({ level, xpInLevel, xpToNextLevel, levelTitle 
             cy={SIZE / 2}
             r={RADIUS}
             fill="none"
-            stroke="#2a2a3e"
+            stroke="#44403C"
             strokeWidth={STROKE}
           />
           {/* Fill */}
@@ -43,7 +43,7 @@ export default function LevelRing({ level, xpInLevel, xpToNextLevel, levelTitle 
             cy={SIZE / 2}
             r={RADIUS}
             fill="none"
-            stroke="#8b5cf6"
+            stroke="#D4632A"
             strokeWidth={STROKE}
             strokeLinecap="round"
             strokeDasharray={CIRCUMFERENCE}

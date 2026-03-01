@@ -3,17 +3,20 @@ module.exports = {
   content: ["./app/**/*.{js,jsx}", "./components/**/*.{js,jsx}"],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ["var(--font-inter)", "system-ui", "sans-serif"],
+      },
       colors: {
         brand: {
-          DEFAULT: "#6d28d9",
-          light: "#8b5cf6",
-          dark: "#4c1d95",
+          DEFAULT: "#D4632A",
+          light: "#E8834A",
+          dark: "#A84E20",
         },
-        surface: "#0f0f1a",
-        card: "#1a1a2e",
-        border: "#2a2a3e",
-        muted: "#6b7280",
-        gold: "#f59e0b",
+        surface: "#1C1917",
+        card: "#292524",
+        border: "#44403C",
+        muted: "#78716C",
+        gold: "#F59E0B",
       },
       keyframes: {
         "ring-fill": {
