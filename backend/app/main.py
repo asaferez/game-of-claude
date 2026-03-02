@@ -119,8 +119,11 @@ def ingest_event(request: Request, body: HookEvent, device_id: str = Depends(req
 
     # ── Raw stat capture: file extensions from Edit/Write ─────────────────────
     if body.hook_event_name == "PostToolUse" and body.tool_name in ("Edit", "Write"):
-        _track_file_extension(db, device_id, stats, body.tool_input or {})
-        stats = get_stats(db, device_id)  # refresh after potential extension update
+        try:
+            _track_file_extension(db, device_id, stats, body.tool_input or {})
+            stats = get_stats(db, device_id)  # refresh after potential extension update
+        except Exception as e:
+            logger.warning("Could not track file extension for %s: %s", device_id[:8], e)
 
     xp_amount, xp_source = compute_xp(body.model_dump())
 
@@ -129,23 +132,30 @@ def ingest_event(request: Request, body: HookEvent, device_id: str = Depends(req
         if _count_today_commits(db, device_id) >= 10:
             xp_amount = 0
 
-    # Always update stat counters when there's a source — decoupled from XP
-    if xp_source:
-        stats = _update_running_totals(db, device_id, stats, xp_source)
-
-    # ── Raw stat capture: commit insertions from git output ───────────────────
-    if xp_source == "commit":
-        _track_commit_insertions(db, device_id, stats, body.tool_response or {})
-
+    # Award XP first — stat counter updates are secondary and must not block it
     if xp_amount > 0:
         award_xp(db, device_id, xp_source, xp_amount)
         new_total_xp = (stats.get("total_xp") or 0) + xp_amount
         upsert_stats(db, device_id, {"total_xp": new_total_xp})
         stats["total_xp"] = new_total_xp
 
+    # Update stat counters — wrapped so a missing column can't block XP above
+    if xp_source:
+        try:
+            stats = _update_running_totals(db, device_id, stats, xp_source)
+        except Exception as e:
+            logger.error("Could not update running totals for %s/%s: %s", device_id[:8], xp_source, e)
+
     if xp_source:
         completions += _check_quests(db, device_id, stats, quest_progress, xp_source, today)
         quest_progress = get_quest_progress(db, device_id)
+
+    # ── Raw stat capture: commit insertions from git output ───────────────────
+    if xp_source == "commit":
+        try:
+            _track_commit_insertions(db, device_id, stats, body.tool_response or {})
+        except Exception as e:
+            logger.warning("Could not track commit insertions for %s: %s", device_id[:8], e)
 
     if body.hook_event_name == "SessionEnd":
         completions += _handle_session_end(db, device_id, stats, body, today, quest_progress)
@@ -410,17 +420,13 @@ def _handle_session_end(db, device_id, stats, body, today, quest_progress) -> li
     total_sessions = (stats.get("total_sessions") or 0) + 1
     total_xp = stats.get("total_xp") or 0
 
+    # Core stat updates — columns present since migration 001, must always succeed
     stat_updates: dict[str, Any] = {
         "last_session_date": today.isoformat(),
         "current_streak": new_streak,
         "longest_streak": new_longest,
         "total_sessions": total_sessions,
     }
-
-    # Session duration
-    session_mins = _compute_session_duration(db, device_id, body.session_id)
-    if session_mins > 0:
-        stat_updates["total_session_minutes"] = (stats.get("total_session_minutes") or 0) + session_mins
 
     if streak_xp > 0:
         award_xp(db, device_id, "streak", streak_xp)
@@ -443,6 +449,18 @@ def _handle_session_end(db, device_id, stats, body, today, quest_progress) -> li
         stat_updates["total_xp"] = total_xp
 
     upsert_stats(db, device_id, stat_updates)
+
+    # Session duration — total_session_minutes added in migration 004; wrapped so
+    # a missing column can't roll back the core stat_updates above.
+    session_mins = _compute_session_duration(db, device_id, body.session_id)
+    if session_mins > 0:
+        try:
+            upsert_stats(db, device_id, {
+                "total_session_minutes": (stats.get("total_session_minutes") or 0) + session_mins,
+            })
+        except Exception as e:
+            logger.warning("Could not update session minutes for %s: %s", device_id[:8], e)
+
     return completions
 
 
