@@ -105,6 +105,28 @@ def get_today_session_count(db: Client, device_id: str) -> int:
     return len(unique)
 
 
+def get_all_events(db: Client, device_id: str) -> list[dict]:
+    """Return every raw event for a device in chronological order."""
+    res = (
+        db.table("events")
+        .select("event_type, received_at, data")
+        .eq("device_id", device_id)
+        .order("received_at")
+        .execute()
+    )
+    return res.data or []
+
+
+def award_xp_at(db: Client, device_id: str, source: str, amount: int, created_at: str) -> None:
+    """Insert an xp_log entry with a specific timestamp (used for backfilling)."""
+    db.table("xp_log").insert({
+        "device_id": device_id,
+        "source": source,
+        "amount": amount,
+        "created_at": created_at,
+    }).execute()
+
+
 def get_session_start_time(db: Client, device_id: str, session_id: str | None) -> datetime | None:
     """Return the received_at timestamp of the SessionStart for this session."""
     if not session_id:
