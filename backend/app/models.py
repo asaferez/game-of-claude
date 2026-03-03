@@ -47,6 +47,16 @@ class ProfilePatch(BaseModel):
     character_name: str = Field(min_length=1, max_length=30)
 
 
+class GitSync(BaseModel):
+    """Stats derived from git log / GitHub API — supplements hook-based tracking."""
+    total_commits: Optional[int] = None
+    total_prs: Optional[int] = None
+    total_merged_prs: Optional[int] = None
+    total_branches: Optional[int] = None
+    total_insertions: Optional[int] = None
+    file_extensions: Optional[list[str]] = None
+
+
 class QuestCompletion(BaseModel):
     quest_id: str
     quest_name: str

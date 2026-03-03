@@ -5,8 +5,17 @@ import re
 import math
 
 TEST_PATTERNS = re.compile(
-    r"\b(pytest|jest|vitest|npm\s+test|yarn\s+test|go\s+test|cargo\s+test|"
-    r"rspec|mocha|phpunit|dotnet\s+test|mvn\s+test|gradle\s+test)\b"
+    r"\b(pytest|python\s+-m\s+pytest|"
+    r"jest|npx\s+jest|"
+    r"vitest|npx\s+vitest|"
+    r"npm\s+test|npm\s+run\s+test|"
+    r"pnpm\s+test|pnpm\s+run\s+test|"
+    r"yarn\s+test|yarn\s+run\s+test|"
+    r"bun\s+test|"
+    r"go\s+test|cargo\s+test|"
+    r"rspec|mocha|phpunit|"
+    r"dotnet\s+test|mvn\s+test|gradle\s+test|"
+    r"make\s+test)\b"
 )
 COMMIT_PATTERN = re.compile(r"\bgit\s+commit\b")
 BRANCH_PATTERN = re.compile(r"\bgit\s+(?:checkout\s+-b|switch\s+-c)\s+\S")

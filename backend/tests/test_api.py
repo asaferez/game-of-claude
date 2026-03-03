@@ -466,3 +466,108 @@ class TestBashOutputField:
         assert insertion_updates == [20], (
             f"Expected total_insertions=20 from 'stdout' field, got: {insertion_updates}"
         )
+
+
+# ── Expanded test pattern detection ──────────────────────────────────────────
+
+class TestExpandedTestPatterns:
+    """Verify that all common test runner commands are detected as test events."""
+
+    @pytest.mark.parametrize("cmd", [
+        "npm run test",
+        "python -m pytest tests/",
+        "npx jest --verbose",
+        "npx vitest run",
+        "pnpm test",
+        "pnpm run test",
+        "yarn run test",
+        "bun test",
+        "make test",
+    ])
+    def test_new_test_commands_award_xp(self, app_client, cmd):
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = _make_stats(device_id)
+
+        res = c.post(
+            "/api/events",
+            json={
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash",
+                "session_id": str(uuid.uuid4()),
+                "tool_use_id": f"toolu_test_{cmd[:10]}",
+                "tool_input": {"command": cmd},
+                "tool_response": {"exit_code": 0},
+            },
+            headers={"Authorization": f"Bearer {device_id}"},
+        )
+        assert res.status_code == 200
+        assert res.json()["xp_awarded"] == 8, (
+            f"Expected 8 XP for test command '{cmd}', got {res.json()['xp_awarded']}"
+        )
+
+
+# ── Git sync endpoint ────────────────────────────────────────────────────────
+
+class TestGitSync:
+    def test_sync_git_merges_stats(self, app_client):
+        """sync-git takes max(current, submitted) for each field."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = {
+            **_make_stats(device_id),
+            "total_branches": 2,
+            "total_prs": 5,
+            "total_merged_prs": 3,
+            "total_insertions": 100,
+            "file_extensions": ["py", "js"],
+        }
+
+        res = c.post(
+            "/api/me/sync-git",
+            json={
+                "total_commits": 50,  # higher than 10 in _make_stats
+                "total_prs": 3,       # lower than 5 — should keep 5
+                "total_merged_prs": 10, # higher than 3
+                "total_branches": 8,  # higher than 2
+                "total_insertions": 5000,  # higher than 100
+                "file_extensions": ["py", "sql", "md"],  # merges with existing
+            },
+            headers={"Authorization": f"Bearer {device_id}"},
+        )
+        assert res.status_code == 200
+        assert "updated_fields" in res.json()
+
+        upsert_calls = app_client["upsert_stats"].call_args_list
+        # Find the sync-git upsert call
+        sync_call = upsert_calls[-1]
+        updates = sync_call.args[2]
+        assert updates["total_commits"] == 50     # max(10, 50)
+        assert updates["total_prs"] == 5           # max(5, 3)
+        assert updates["total_merged_prs"] == 10   # max(3, 10)
+        assert updates["total_branches"] == 8      # max(2, 8)
+        assert updates["total_insertions"] == 5000  # max(100, 5000)
+        assert set(updates["file_extensions"]) == {"py", "js", "sql", "md"}
+
+    def test_sync_git_requires_auth(self, app_client):
+        c = app_client["client"]
+        res = c.post("/api/me/sync-git", json={"total_commits": 1})
+        assert res.status_code == 422
+
+
+# ── Debug endpoints ──────────────────────────────────────────────────────────
+
+class TestDebugEndpoints:
+    def test_last_event_not_found(self, app_client):
+        c = app_client["client"]
+        app_client["get_device"].return_value = None
+        res = c.get(f"/api/debug/last-event/{uuid.uuid4()}")
+        assert res.status_code == 404
+
+    def test_event_count_not_found(self, app_client):
+        c = app_client["client"]
+        app_client["get_device"].return_value = None
+        res = c.get(f"/api/debug/event-count/{uuid.uuid4()}")
+        assert res.status_code == 404

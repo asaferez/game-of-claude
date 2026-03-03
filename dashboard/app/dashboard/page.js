@@ -155,7 +155,7 @@ export default async function DashboardPage({ searchParams }) {
           <StatCard label="Sessions" value={profile.total_sessions} />
           <StatCard label="Commits" value={profile.total_commits} />
           <StatCard label="Branches" value={profile.total_branches ?? 0} />
-          <StatCard label="PRs merged" value={profile.total_merged_prs ?? 0} />
+          <StatCard label="PRs" value={(profile.total_prs ?? 0) + (profile.total_merged_prs ?? 0)} />
           <StatCard label="Tests passed" value={profile.total_test_passes} />
           <StatCard label="Languages" value={profile.unique_extensions ?? 0} />
           <StatCard

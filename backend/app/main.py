@@ -6,6 +6,8 @@ import os
 from datetime import date, datetime, timezone
 from typing import Any
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Header, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -25,13 +27,31 @@ from .engine.xp import (
 )
 from .engine.streak import compute_streak_xp
 from .engine.quests import QUESTS, QUEST_BY_ID, get_counter_value, quests_to_check_for_event
-from .models import HookEvent, DeviceRegister, ProfilePatch
+from .models import HookEvent, DeviceRegister, ProfilePatch, GitSync
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="Game of Claude API")
+
+
+@asynccontextmanager
+async def lifespan(app):
+    """Verify migration 003 columns exist so stat tracking doesn't fail silently."""
+    try:
+        db = get_client()
+        db.table("user_stats").select(
+            "total_branches, total_prs, total_merged_prs, "
+            "total_insertions, total_session_minutes, file_extensions"
+        ).limit(1).execute()
+        logger.info("Schema check passed: migration 003 columns present")
+    except Exception as e:
+        logger.error("SCHEMA CHECK FAILED: migration 003 columns missing! "
+                     "Run supabase/migrations/003_raw_stats_columns.sql. Error: %s", e)
+    yield
+
+
+app = FastAPI(title="Game of Claude API", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -538,6 +558,89 @@ def _reprocess_events(db, device_id: str) -> dict:
         "entries_added": len(to_award),
         "total_xp":     total_xp,
     }
+
+
+# ── Git Sync ─────────────────────────────────────────────────────────────────
+
+@app.post("/api/me/sync-git", status_code=200)
+@limiter.limit("30/hour")
+def sync_git_stats(request: Request, body: GitSync, device_id: str = Depends(require_device)):
+    """
+    Merge git/GitHub-derived stats with existing event-based stats.
+    Uses max(current, submitted) for each field so stats only go up.
+    Call this after /api/me/reprocess to layer git data on top.
+    """
+    db = get_client()
+    stats = get_stats(db, device_id)
+    updates: dict[str, Any] = {}
+
+    for field in ("total_commits", "total_prs", "total_merged_prs",
+                  "total_branches", "total_insertions"):
+        submitted = getattr(body, field)
+        if submitted is not None:
+            current = stats.get(field) or 0
+            updates[field] = max(current, submitted)
+
+    if body.file_extensions is not None:
+        existing = set(stats.get("file_extensions") or [])
+        merged = sorted(existing | set(body.file_extensions))
+        updates["file_extensions"] = merged
+
+    if updates:
+        upsert_stats(db, device_id, updates)
+        logger.info("Git sync for %s...: updated %s", device_id[:8], list(updates.keys()))
+
+    return {"status": "ok", "updated_fields": list(updates.keys())}
+
+
+# ── Debug / Diagnostics ──────────────────────────────────────────────────────
+
+@app.get("/api/debug/last-event/{profile_device_id}")
+def debug_last_event(profile_device_id: str):
+    """Return the timestamp of the most recently received event for diagnostics."""
+    db = get_client()
+    if not get_device(db, profile_device_id):
+        raise HTTPException(status_code=404, detail="Device not found")
+    res = (
+        db.table("events")
+        .select("event_type, received_at")
+        .eq("device_id", profile_device_id)
+        .order("received_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return {"last_event": None, "message": "No events received yet"}
+    return {"last_event": res.data[0]}
+
+
+@app.get("/api/debug/event-count/{profile_device_id}")
+def debug_event_count(profile_device_id: str):
+    """Return event counts by type and day for the last 7 days."""
+    db = get_client()
+    if not get_device(db, profile_device_id):
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    from datetime import timedelta
+    since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    res = (
+        db.table("events")
+        .select("event_type, received_at")
+        .eq("device_id", profile_device_id)
+        .gte("received_at", since)
+        .execute()
+    )
+
+    by_day: dict[str, dict[str, int]] = {}
+    total = 0
+    for row in (res.data or []):
+        day = row["received_at"][:10]
+        etype = row["event_type"]
+        by_day.setdefault(day, {})
+        by_day[day][etype] = by_day[day].get(etype, 0) + 1
+        total += 1
+
+    return {"total_events": total, "by_day": by_day}
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
