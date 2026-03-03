@@ -17,7 +17,7 @@ from .db import (
     award_xp, upsert_stats, upsert_quest_progress,
     log_raw_event, is_already_processed, make_source_key,
     get_recent_events, get_today_session_count, count_today_xp_source,
-    get_session_start_time,
+    get_session_start_time, get_all_events, award_xp_at,
 )
 from .engine.xp import (
     compute_xp, compute_level, xp_for_level, level_title,
@@ -343,6 +343,201 @@ def get_leaderboard():
             break
 
     return {"leaderboard": result}
+
+
+# ── Reprocess ─────────────────────────────────────────────────────────────────
+
+@app.post("/api/me/reprocess", status_code=200)
+@limiter.limit("10/hour")
+def reprocess_my_events(request: Request, device_id: str = Depends(require_device)):
+    """
+    Replay all stored raw events through the XP engine to correct any gaps in
+    xp_log and user_stats.  Safe to call multiple times — only inserts missing
+    xp_log entries and rebuilds user_stats from the full event history.
+    """
+    db = get_client()
+    result = _reprocess_events(db, device_id)
+    logger.info(
+        "Reprocess %s...: +%d XP across %d new entries",
+        device_id[:8], result["xp_added"], result["entries_added"],
+    )
+    return {"status": "ok", **result}
+
+
+def _reprocess_events(db, device_id: str) -> dict:
+    """
+    Core reprocess logic.  Returns {xp_added, entries_added, total_xp}.
+    """
+    from collections import defaultdict
+
+    events = get_all_events(db, device_id)
+
+    # ── Existing xp_log (count per source+day so we can compute the delta) ────
+    xp_rows = (
+        db.table("xp_log").select("source, amount, created_at")
+        .eq("device_id", device_id).execute().data or []
+    )
+    # "install" was awarded at registration, not from an event — leave it alone
+    existing: dict[tuple, int] = defaultdict(int)
+    for row in xp_rows:
+        if row["source"] != "install":
+            existing[(row["source"], row["created_at"][:10])] += 1
+
+    # ── Replay events ──────────────────────────────────────────────────────────
+    expected: list[tuple[str, int, str]] = []   # (source, amount, day)
+    commit_per_day: dict[str, int] = defaultdict(int)
+    session_days: list[str] = []
+
+    # For user_stats full rebuild
+    stat_totals: dict[str, int] = defaultdict(int)
+    total_insertions = 0
+    file_exts: set[str] = set()
+    session_starts: dict[str, str] = {}   # session_id -> received_at ISO
+    total_session_minutes = 0
+
+    for ev in events:
+        etype = ev.get("event_type", "")
+        data  = ev.get("data") or {}
+        day   = ev["received_at"][:10]
+        sid   = data.get("session_id")
+
+        if etype == "SessionStart":
+            if sid:
+                session_starts[sid] = ev["received_at"]
+            continue
+
+        if etype == "SessionEnd":
+            session_days.append(day)
+            stat_totals["total_sessions"] += 1
+            if sid and sid in session_starts:
+                try:
+                    t0 = datetime.fromisoformat(session_starts[sid].replace("Z", "+00:00"))
+                    t1 = datetime.fromisoformat(ev["received_at"].replace("Z", "+00:00"))
+                    total_session_minutes += min(int((t1 - t0).total_seconds() / 60), 480)
+                except Exception:
+                    pass
+            continue
+
+        if etype != "PostToolUse":
+            continue
+
+        tool = data.get("tool_name", "")
+
+        # File-extension tracking (Edit / Write)
+        if tool in ("Edit", "Write"):
+            ext = extract_file_extension((data.get("tool_input") or {}).get("file_path", ""))
+            if ext:
+                file_exts.add(ext)
+
+        if tool != "Bash":
+            continue
+
+        xp_amount, xp_source = compute_xp(data)
+        if not xp_source:
+            continue
+
+        # Running stat counters
+        if xp_source == "commit":
+            stat_totals["total_commits"] += 1
+            output = (data.get("tool_response") or {}).get("output") or \
+                     (data.get("tool_response") or {}).get("stdout") or ""
+            total_insertions += parse_commit_stats(output).get("insertions", 0)
+        elif xp_source == "test_pass":
+            stat_totals["total_test_passes"] += 1
+        elif xp_source == "pr":
+            stat_totals["total_prs"] += 1
+        elif xp_source == "merged_pr":
+            stat_totals["total_merged_prs"] += 1
+        elif xp_source == "branch":
+            stat_totals["total_branches"] += 1
+
+        # Daily commit cap
+        if xp_source == "commit" and xp_amount > 0:
+            if commit_per_day[day] >= 10:
+                continue
+            commit_per_day[day] += 1
+
+        if xp_amount > 0:
+            expected.append((xp_source, xp_amount, day))
+
+    # First-session bonus (one-time, on the day of first SessionStart)
+    if session_starts:
+        first_day = sorted(session_starts.values())[0][:10]
+        expected.append(("first_session", 10, first_day))
+
+    # Session-commit bonuses
+    for day in sorted(set(session_days)):
+        if commit_per_day[day] > 0:
+            expected.append(("session_commit", 20, day))
+
+    # Streak bonuses
+    streak = 0
+    prev_d: date | None = None
+    for day_str in sorted(set(session_days)):
+        d = date.fromisoformat(day_str)
+        streak = (streak + 1) if (prev_d and (d - prev_d).days == 1) else 1
+        prev_d = d
+        expected.append(("streak", 10 * streak, day_str))
+
+    # ── Compute delta: expected – already credited ─────────────────────────────
+    exp_by_key: dict[tuple, list[int]] = defaultdict(list)
+    for source, amount, day in expected:
+        exp_by_key[(source, day)].append(amount)
+
+    to_award: list[tuple[str, int, str]] = []
+    for (source, day), amounts in sorted(exp_by_key.items()):
+        gap = max(0, len(amounts) - existing[(source, day)])
+        for amount in amounts[-gap:]:          # take the last N (streak amounts grow daily)
+            to_award.append((source, amount, day))
+
+    # ── Insert missing entries ─────────────────────────────────────────────────
+    for source, amount, day in to_award:
+        award_xp_at(db, device_id, source, amount, f"{day}T12:00:00+00:00")
+
+    # ── Rebuild user_stats ─────────────────────────────────────────────────────
+    total_xp = sum(
+        r["amount"] for r in
+        (db.table("xp_log").select("amount").eq("device_id", device_id).execute().data or [])
+    )
+
+    # Streak from session days
+    final_streak = longest = streak = 0
+    prev_d = None
+    for day_str in sorted(set(session_days)):
+        d = date.fromisoformat(day_str)
+        streak = (streak + 1) if (prev_d and (d - prev_d).days == 1) else 1
+        prev_d = d
+        longest = max(longest, streak)
+    if session_days:
+        last_d = date.fromisoformat(sorted(session_days)[-1])
+        final_streak = streak if (date.today() - last_d).days <= 1 else 0
+
+    new_stats: dict[str, Any] = {
+        "total_xp":          total_xp,
+        "level":             compute_level(total_xp),
+        "total_commits":     stat_totals["total_commits"],
+        "total_test_passes": stat_totals["total_test_passes"],
+        "total_prs":         stat_totals["total_prs"],
+        "total_merged_prs":  stat_totals["total_merged_prs"],
+        "total_branches":    stat_totals["total_branches"],
+        "total_sessions":    stat_totals["total_sessions"],
+        "current_streak":    final_streak,
+        "longest_streak":    longest,
+        "total_insertions":  total_insertions,
+        "total_session_minutes": total_session_minutes,
+    }
+    if session_days:
+        new_stats["last_session_date"] = sorted(session_days)[-1]
+    if file_exts:
+        new_stats["file_extensions"] = list(file_exts)
+
+    upsert_stats(db, device_id, new_stats)
+
+    return {
+        "xp_added":     sum(a for _, a, _ in to_award),
+        "entries_added": len(to_award),
+        "total_xp":     total_xp,
+    }
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
