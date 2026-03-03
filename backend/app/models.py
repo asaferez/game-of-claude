@@ -57,6 +57,21 @@ class GitSync(BaseModel):
     file_extensions: Optional[list[str]] = None
 
 
+class SessionSummary(BaseModel):
+    """Summary of a Claude Code session, derived from transcript parsing."""
+    session_id: str
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+    duration_minutes: int = 0
+    commits: int = 0
+    test_passes: int = 0
+    branches: int = 0
+    prs_created: int = 0
+    prs_merged: int = 0
+    file_extensions: list[str] = []
+    model_config = {"extra": "ignore"}
+
+
 class QuestCompletion(BaseModel):
     quest_id: str
     quest_name: str

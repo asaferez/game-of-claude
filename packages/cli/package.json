@@ -14,7 +14,8 @@
   "type": "module",
   "files": [
     "bin/",
-    "src/"
+    "src/",
+    "scripts/"
   ],
   "engines": {
     "node": ">=18"

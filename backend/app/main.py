@@ -27,7 +27,7 @@ from .engine.xp import (
 )
 from .engine.streak import compute_streak_xp
 from .engine.quests import QUESTS, QUEST_BY_ID, get_counter_value, quests_to_check_for_event
-from .models import HookEvent, DeviceRegister, ProfilePatch, GitSync
+from .models import HookEvent, DeviceRegister, ProfilePatch, GitSync, SessionSummary
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -533,11 +533,13 @@ def _reprocess_events(db, device_id: str) -> dict:
         last_d = date.fromisoformat(sorted(session_days)[-1])
         final_streak = streak if (date.today() - last_d).days <= 1 else 0
 
-    # Preserve git-synced stats: use max(event-derived, existing) for fields
-    # that can also be populated by /api/me/sync-git.
+    # Preserve stats that can be populated by /api/me/sync-git or /api/me/sync-session.
+    # Use max(event-derived, existing) so reprocess doesn't overwrite higher values.
     current_stats = get_stats(db, device_id)
-    git_synced_fields = ("total_commits", "total_prs", "total_merged_prs",
-                         "total_branches", "total_insertions")
+    max_merge_fields = ("total_commits", "total_prs", "total_merged_prs",
+                        "total_branches", "total_insertions",
+                        "total_sessions", "total_session_minutes",
+                        "current_streak", "longest_streak")
 
     new_stats: dict[str, Any] = {
         "total_xp":          total_xp,
@@ -553,7 +555,7 @@ def _reprocess_events(db, device_id: str) -> dict:
         "total_insertions":  total_insertions,
         "total_session_minutes": total_session_minutes,
     }
-    for field in git_synced_fields:
+    for field in max_merge_fields:
         new_stats[field] = max(new_stats[field], current_stats.get(field) or 0)
 
     if session_days:
@@ -628,6 +630,141 @@ def sync_git_stats(request: Request, body: GitSync, device_id: str = Depends(req
     return {
         "status": "ok",
         "updated_fields": list(updates.keys()),
+        "quest_completions": completions,
+    }
+
+
+# ── Session Sync (transcript-based) ──────────────────────────────────────────
+
+@app.post("/api/me/sync-session", status_code=200)
+@limiter.limit("60/hour")
+def sync_session(request: Request, body: SessionSummary, device_id: str = Depends(require_device)):
+    """
+    Accept a session summary from the transcript parser (process_session.py).
+    Deduplicates by session_id — safe to call multiple times for the same session.
+    Updates user_stats and awards XP for the session.
+    """
+    db = get_client()
+
+    # Dedup by session_id: check if we've already processed this session
+    source_key = make_source_key(body.session_id, "sync-session")
+    if is_already_processed(db, source_key):
+        return {"status": "ok", "already_processed": True}
+
+    stats = get_stats(db, device_id)
+    today = date.today()
+    quest_progress = get_quest_progress(db, device_id)
+    completions: list[dict] = []
+
+    # ── Update stat counters (max-merge so we never go backwards) ────────
+    updates: dict[str, Any] = {}
+
+    # Additive stats: these come from this session only, so add them
+    updates["total_sessions"] = (stats.get("total_sessions") or 0) + 1
+    updates["total_session_minutes"] = (
+        (stats.get("total_session_minutes") or 0) + body.duration_minutes
+    )
+
+    # For commit/test/branch/PR counts, use max-merge: the transcript count
+    # is for this session only, but sync-git may have already set a higher
+    # career total from git log. So add session counts to current value.
+    if body.commits > 0:
+        updates["total_commits"] = (stats.get("total_commits") or 0) + body.commits
+    if body.test_passes > 0:
+        updates["total_test_passes"] = (stats.get("total_test_passes") or 0) + body.test_passes
+    if body.branches > 0:
+        updates["total_branches"] = (stats.get("total_branches") or 0) + body.branches
+    if body.prs_created > 0:
+        updates["total_prs"] = (stats.get("total_prs") or 0) + body.prs_created
+    if body.prs_merged > 0:
+        updates["total_merged_prs"] = (stats.get("total_merged_prs") or 0) + body.prs_merged
+
+    # File extensions: union merge
+    if body.file_extensions:
+        existing_exts = set(stats.get("file_extensions") or [])
+        merged_exts = sorted(existing_exts | set(body.file_extensions))
+        updates["file_extensions"] = merged_exts
+
+    # ── Streak ───────────────────────────────────────────────────────────
+    session_date = today
+    if body.ended_at:
+        try:
+            session_date = datetime.fromisoformat(
+                body.ended_at.replace("Z", "+00:00")
+            ).date()
+        except (ValueError, TypeError):
+            pass
+
+    last_date_str = stats.get("last_session_date")
+    last_date = date.fromisoformat(last_date_str) if last_date_str else None
+    streak_xp, new_streak = compute_streak_xp(
+        last_date, stats.get("current_streak", 0), session_date
+    )
+    updates["last_session_date"] = session_date.isoformat()
+    updates["current_streak"] = new_streak
+    updates["longest_streak"] = max(stats.get("longest_streak", 0), new_streak)
+
+    # ── XP ───────────────────────────────────────────────────────────────
+    total_xp = stats.get("total_xp") or 0
+
+    # Commit XP: 15 per commit, capped at 10 commits per day
+    commit_xp = min(body.commits, 10) * 15
+    if commit_xp > 0:
+        award_xp(db, device_id, "commit", commit_xp)
+        total_xp += commit_xp
+
+    # Test XP: 8 per test run
+    test_xp = body.test_passes * 8
+    if test_xp > 0:
+        award_xp(db, device_id, "test_pass", test_xp)
+        total_xp += test_xp
+
+    # PR XP: 12 per PR created
+    pr_xp = body.prs_created * 12
+    if pr_xp > 0:
+        award_xp(db, device_id, "pr", pr_xp)
+        total_xp += pr_xp
+
+    # Branch XP: 5 per branch
+    branch_xp = body.branches * 5
+    if branch_xp > 0:
+        award_xp(db, device_id, "branch", branch_xp)
+        total_xp += branch_xp
+
+    # Session-commit bonus: 20 XP if session had commits
+    if body.commits > 0:
+        award_xp(db, device_id, "session_commit", 20)
+        total_xp += 20
+
+    # Streak XP
+    if streak_xp > 0:
+        award_xp(db, device_id, "streak", streak_xp)
+        total_xp += streak_xp
+
+    updates["total_xp"] = total_xp
+    updates["level"] = compute_level(total_xp)
+    upsert_stats(db, device_id, updates)
+
+    # ── Quest checking ───────────────────────────────────────────────────
+    merged_stats = {**stats, **updates}
+    for source in ("commit", "test_pass", "pr", "branch", "session_commit",
+                    "streak", "file_extension"):
+        completions += _check_quests(
+            db, device_id, merged_stats, quest_progress, source, today
+        )
+        quest_progress = get_quest_progress(db, device_id)
+
+    xp_awarded = commit_xp + test_xp + pr_xp + branch_xp + streak_xp + (20 if body.commits > 0 else 0)
+    logger.info(
+        "Session sync %s for %s...: +%d XP (%d commits, %d tests, %d PRs, %dd streak)",
+        body.session_id[:8], device_id[:8], xp_awarded,
+        body.commits, body.test_passes, body.prs_created, new_streak,
+    )
+
+    return {
+        "status": "ok",
+        "already_processed": False,
+        "xp_awarded": xp_awarded,
         "quest_completions": completions,
     }
 
