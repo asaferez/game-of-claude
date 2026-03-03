@@ -590,7 +590,20 @@ def sync_git_stats(request: Request, body: GitSync, device_id: str = Depends(req
         upsert_stats(db, device_id, updates)
         logger.info("Git sync for %s...: updated %s", device_id[:8], list(updates.keys()))
 
-    return {"status": "ok", "updated_fields": list(updates.keys())}
+    # Check quests that may now be completed with the updated stats
+    merged_stats = {**stats, **updates}
+    quest_progress = get_quest_progress(db, device_id)
+    today = date.today()
+    completions: list[dict] = []
+    for source in ("commit", "pr", "merged_pr", "file_extension"):
+        completions += _check_quests(db, device_id, merged_stats, quest_progress, source, today)
+        quest_progress = get_quest_progress(db, device_id)  # refresh after changes
+
+    return {
+        "status": "ok",
+        "updated_fields": list(updates.keys()),
+        "quest_completions": completions,
+    }
 
 
 # ── Debug / Diagnostics ──────────────────────────────────────────────────────

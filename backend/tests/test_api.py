@@ -541,9 +541,14 @@ class TestGitSync:
         assert "updated_fields" in res.json()
 
         upsert_calls = app_client["upsert_stats"].call_args_list
-        # Find the sync-git upsert call
-        sync_call = upsert_calls[-1]
-        updates = sync_call.args[2]
+        # Find the sync-git upsert call (first one with file_extensions)
+        updates = None
+        for call in upsert_calls:
+            args = call.args[2]
+            if "file_extensions" in args:
+                updates = args
+                break
+        assert updates is not None, "sync-git upsert call not found"
         assert updates["total_commits"] == 50     # max(10, 50)
         assert updates["total_prs"] == 5           # max(5, 3)
         assert updates["total_merged_prs"] == 10   # max(3, 10)
