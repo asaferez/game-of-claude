@@ -565,10 +565,23 @@ def _reprocess_events(db, device_id: str) -> dict:
 
     upsert_stats(db, device_id, new_stats)
 
+    # Build diagnostic info
+    existing_summary = {f"{s}@{d}": c for (s, d), c in sorted(existing.items()) if c > 0}
+    expected_summary: dict[str, int] = defaultdict(int)
+    for s, _, d in expected:
+        expected_summary[f"{s}@{d}"] += 1
+
     return {
         "xp_added":     sum(a for _, a, _ in to_award),
         "entries_added": len(to_award),
         "total_xp":     total_xp,
+        "_debug": {
+            "xp_log_rows_read": len(xp_rows),
+            "events_read": len(events),
+            "existing": dict(existing_summary),
+            "expected": dict(expected_summary),
+            "to_award": [{"source": s, "amount": a, "day": d} for s, a, d in to_award],
+        },
     }
 
 
