@@ -66,14 +66,6 @@ function formatNum(n) {
   return String(n);
 }
 
-function formatHours(minutes) {
-  if (!minutes) return "0h";
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
-}
 
 export default async function DashboardPage({ searchParams }) {
   const id = (await searchParams).id;
@@ -163,10 +155,6 @@ export default async function DashboardPage({ searchParams }) {
             value={formatNum(profile.total_insertions ?? 0)}
           />
           <StatCard
-            label="Coding time"
-            value={formatHours(profile.total_session_minutes ?? 0)}
-          />
-          <StatCard
             label="Best streak"
             value={`${profile.longest_streak}d`}
           />
@@ -252,17 +240,7 @@ export default async function DashboardPage({ searchParams }) {
               </div>
             )}
           </div>
-          {stats.peak_hour != null && (
-            <div className="mt-3 bg-card border border-border rounded-2xl p-4 flex items-center gap-3">
-              <span className="text-2xl">⏰</span>
-              <div>
-                <div className="text-sm font-semibold text-white">
-                  Peak hour: {formatHour(stats.peak_hour)}
-                </div>
-                <div className="text-xs text-muted">Most active coding time (UTC)</div>
-              </div>
-            </div>
-          )}
+
         </section>
       )}
 
@@ -336,11 +314,6 @@ function MiniBarList({ items }) {
   );
 }
 
-function formatHour(h) {
-  const ampm = h >= 12 ? "PM" : "AM";
-  const display = h % 12 || 12;
-  return `${display}:00 ${ampm}`;
-}
 
 function MissingId() {
   return (
