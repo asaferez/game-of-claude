@@ -9,7 +9,7 @@ function prompt(question) {
 }
 
 function buildHooks(deviceId) {
-  const hook = { type: "http", url: `${API_BASE}/api/events`, headers: { Authorization: `Bearer ${deviceId}` }, async: true };
+  const hook = { type: "http", url: `${API_BASE}/api/events`, headers: { Authorization: `Bearer ${deviceId}` }, timeout: 10 };
   return {
     SessionStart: [{ hooks: [hook] }],
     SessionEnd:   [{ hooks: [hook] }],
