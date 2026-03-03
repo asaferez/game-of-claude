@@ -16,7 +16,7 @@ function buildHooks(deviceId) {
   const scriptPath = join(homedir(), ".claude", "scripts", "process_session.py");
   const cmdHook = { type: "command", command: `python3 "${scriptPath}"`, timeout: 30 };
   return {
-    SessionStart: [{ hooks: [httpHook] }],
+    SessionStart: [{ hooks: [httpHook, cmdHook] }],
     SessionEnd:   [{ hooks: [httpHook, cmdHook] }],
     PostToolUse:  [{ matcher: "Bash", hooks: [httpHook] }, { matcher: "Edit|Write", hooks: [httpHook] }],
   };
