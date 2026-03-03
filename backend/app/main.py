@@ -668,6 +668,27 @@ def debug_event_count(profile_device_id: str):
     return {"total_events": total, "by_day": by_day}
 
 
+@app.get("/api/debug/xp-log/{profile_device_id}")
+def debug_xp_log(profile_device_id: str):
+    """Return xp_log entries for debugging reprocess idempotency."""
+    db = get_client()
+    if not get_device(db, profile_device_id):
+        raise HTTPException(status_code=404, detail="Device not found")
+    rows = (
+        db.table("xp_log")
+        .select("source, amount, created_at")
+        .eq("device_id", profile_device_id)
+        .order("created_at")
+        .execute()
+        .data or []
+    )
+    summary: dict[str, int] = {}
+    for r in rows:
+        key = f"{r['source']}@{r['created_at'][:10]}"
+        summary[key] = summary.get(key, 0) + 1
+    return {"total_entries": len(rows), "entries": rows, "summary": summary}
+
+
 # ── Delete ────────────────────────────────────────────────────────────────────
 
 @app.delete("/api/me", status_code=200)
