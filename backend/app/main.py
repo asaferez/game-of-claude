@@ -532,6 +532,12 @@ def _reprocess_events(db, device_id: str) -> dict:
         last_d = date.fromisoformat(sorted(session_days)[-1])
         final_streak = streak if (date.today() - last_d).days <= 1 else 0
 
+    # Preserve git-synced stats: use max(event-derived, existing) for fields
+    # that can also be populated by /api/me/sync-git.
+    current_stats = get_stats(db, device_id)
+    git_synced_fields = ("total_commits", "total_prs", "total_merged_prs",
+                         "total_branches", "total_insertions")
+
     new_stats: dict[str, Any] = {
         "total_xp":          total_xp,
         "level":             compute_level(total_xp),
@@ -546,10 +552,16 @@ def _reprocess_events(db, device_id: str) -> dict:
         "total_insertions":  total_insertions,
         "total_session_minutes": total_session_minutes,
     }
+    for field in git_synced_fields:
+        new_stats[field] = max(new_stats[field], current_stats.get(field) or 0)
+
     if session_days:
         new_stats["last_session_date"] = sorted(session_days)[-1]
     if file_exts:
-        new_stats["file_extensions"] = list(file_exts)
+        existing_exts = set(current_stats.get("file_extensions") or [])
+        new_stats["file_extensions"] = sorted(existing_exts | file_exts)
+    elif current_stats.get("file_extensions"):
+        new_stats["file_extensions"] = current_stats["file_extensions"]
 
     upsert_stats(db, device_id, new_stats)
 
