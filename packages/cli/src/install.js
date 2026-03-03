@@ -1,5 +1,8 @@
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "fs";
 import { createInterface } from "readline";
+import { join, dirname } from "path";
+import { homedir } from "os";
+import { fileURLToPath } from "url";
 import fetch from "node-fetch";
 import { readConfig, writeConfig, generateDeviceId, API_BASE, DASHBOARD_BASE, SETTINGS_FILE } from "./config.js";
 
@@ -9,11 +12,13 @@ function prompt(question) {
 }
 
 function buildHooks(deviceId) {
-  const hook = { type: "http", url: `${API_BASE}/api/events`, headers: { Authorization: `Bearer ${deviceId}` }, timeout: 10 };
+  const httpHook = { type: "http", url: `${API_BASE}/api/events`, headers: { Authorization: `Bearer ${deviceId}` }, timeout: 10 };
+  const scriptPath = join(homedir(), ".claude", "scripts", "process_session.py");
+  const cmdHook = { type: "command", command: `python3 "${scriptPath}"`, timeout: 30 };
   return {
-    SessionStart: [{ hooks: [hook] }],
-    SessionEnd:   [{ hooks: [hook] }],
-    PostToolUse:  [{ matcher: "Bash", hooks: [hook] }, { matcher: "Edit|Write", hooks: [hook] }],
+    SessionStart: [{ hooks: [httpHook] }],
+    SessionEnd:   [{ hooks: [httpHook, cmdHook] }],
+    PostToolUse:  [{ matcher: "Bash", hooks: [httpHook] }, { matcher: "Edit|Write", hooks: [httpHook] }],
   };
 }
 
@@ -24,7 +29,8 @@ function mergeHooks(existing, newHooks) {
     const filtered = (settings.hooks[event] ?? []).filter(
       (e) => !e.hooks?.some((h) =>
         h.url?.includes("gameofclaude") ||
-        h.url?.includes("game-of-claude-production.up.railway.app")
+        h.url?.includes("game-of-claude-production.up.railway.app") ||
+        h.command?.includes("process_session")
       )
     );
     settings.hooks[event] = [...filtered, ...entries];
@@ -58,6 +64,16 @@ export async function install() {
   } catch (err) {
     console.error(`\nFailed to reach backend: ${err.message}`);
     process.exit(1);
+  }
+
+  // Install process_session.py script to ~/.claude/scripts/
+  const scriptsDir = join(homedir(), ".claude", "scripts");
+  if (!existsSync(scriptsDir)) mkdirSync(scriptsDir, { recursive: true });
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const scriptSrc = join(__dirname, "..", "scripts", "process_session.py");
+  const scriptDest = join(scriptsDir, "process_session.py");
+  if (existsSync(scriptSrc)) {
+    copyFileSync(scriptSrc, scriptDest);
   }
 
   let settings = {};

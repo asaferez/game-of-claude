@@ -562,6 +562,149 @@ class TestGitSync:
         assert res.status_code == 422
 
 
+# ── Session sync (transcript-based) ──────────────────────────────────────────
+
+class TestSyncSession:
+    def _session_summary(self, **overrides):
+        base = {
+            "session_id": str(uuid.uuid4()),
+            "started_at": "2026-03-03T10:00:00Z",
+            "ended_at": "2026-03-03T11:30:00Z",
+            "duration_minutes": 90,
+            "commits": 3,
+            "test_passes": 5,
+            "branches": 1,
+            "prs_created": 1,
+            "prs_merged": 0,
+            "file_extensions": ["py", "js"],
+        }
+        base.update(overrides)
+        return base
+
+    def test_sync_session_updates_stats(self, app_client):
+        """sync-session should increment all stat counters and award XP."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = _make_stats(device_id, xp=100)
+
+        res = c.post(
+            "/api/me/sync-session",
+            json=self._session_summary(),
+            headers={"Authorization": f"Bearer {device_id}"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["already_processed"] is False
+        assert body["xp_awarded"] > 0
+
+        # Check that stats were upserted
+        upsert_calls = app_client["upsert_stats"].call_args_list
+        assert len(upsert_calls) > 0
+        # Find the main upsert call with total_sessions
+        updates = None
+        for call in upsert_calls:
+            args = call.args[2]
+            if "total_sessions" in args:
+                updates = args
+                break
+        assert updates is not None, "sync-session upsert call not found"
+        assert updates["total_sessions"] == 8  # was 7, +1
+        assert updates["total_commits"] == 13  # was 10, +3
+        assert updates["total_prs"] == 1  # was 0 (missing from _make_stats), +1
+
+    def test_sync_session_dedup(self, app_client):
+        """Sending the same session_id twice should return already_processed."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = _make_stats(device_id)
+        app_client["is_already_processed"].return_value = True
+
+        res = c.post(
+            "/api/me/sync-session",
+            json=self._session_summary(),
+            headers={"Authorization": f"Bearer {device_id}"},
+        )
+        assert res.status_code == 200
+        assert res.json()["already_processed"] is True
+
+    def test_sync_session_xp_breakdown(self, app_client):
+        """Verify XP amounts: 3 commits * 15 + 5 tests * 8 + 1 PR * 12 + 1 branch * 5 + session_commit 20."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = _make_stats(device_id, xp=100)
+
+        res = c.post(
+            "/api/me/sync-session",
+            json=self._session_summary(commits=3, test_passes=5, prs_created=1, branches=1),
+            headers={"Authorization": f"Bearer {device_id}"},
+        )
+        body = res.json()
+        # 3*15=45 + 5*8=40 + 1*12=12 + 1*5=5 + 20(session_commit) + streak_xp
+        # Streak XP depends on current streak (3 -> 4, so 40)
+        expected_base = 45 + 40 + 12 + 5 + 20
+        assert body["xp_awarded"] >= expected_base
+
+    def test_sync_session_requires_auth(self, app_client):
+        c = app_client["client"]
+        res = c.post("/api/me/sync-session", json=self._session_summary())
+        assert res.status_code == 422
+
+    def test_sync_session_empty_session(self, app_client):
+        """A session with no commits/tests should still count as a session."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = _make_stats(device_id, xp=100)
+
+        res = c.post(
+            "/api/me/sync-session",
+            json=self._session_summary(commits=0, test_passes=0, branches=0, prs_created=0),
+            headers={"Authorization": f"Bearer {device_id}"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert body["already_processed"] is False
+        # Should still award streak XP
+        upsert_calls = app_client["upsert_stats"].call_args_list
+        updates = None
+        for call in upsert_calls:
+            args = call.args[2]
+            if "total_sessions" in args:
+                updates = args
+                break
+        assert updates is not None
+        assert updates["total_sessions"] == 8  # was 7, +1
+
+    def test_sync_session_merges_file_extensions(self, app_client):
+        """File extensions should be union-merged with existing ones."""
+        c = app_client["client"]
+        device_id = str(uuid.uuid4())
+        app_client["get_device"].return_value = _make_device(device_id)
+        app_client["get_stats"].return_value = {
+            **_make_stats(device_id),
+            "file_extensions": ["py", "js"],
+        }
+
+        res = c.post(
+            "/api/me/sync-session",
+            json=self._session_summary(file_extensions=["py", "sql", "md"]),
+            headers={"Authorization": f"Bearer {device_id}"},
+        )
+        assert res.status_code == 200
+        upsert_calls = app_client["upsert_stats"].call_args_list
+        updates = None
+        for call in upsert_calls:
+            args = call.args[2]
+            if "file_extensions" in args:
+                updates = args
+                break
+        assert updates is not None
+        assert set(updates["file_extensions"]) == {"py", "js", "sql", "md"}
+
+
 # ── Debug endpoints ──────────────────────────────────────────────────────────
 
 class TestDebugEndpoints:
