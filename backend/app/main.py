@@ -506,9 +506,10 @@ def _reprocess_events(db, device_id: str) -> dict:
 
     to_award: list[tuple[str, int, str]] = []
     for (source, day), amounts in sorted(exp_by_key.items()):
-        gap = max(0, len(amounts) - existing[(source, day)])
-        for amount in amounts[-gap:]:          # take the last N (streak amounts grow daily)
-            to_award.append((source, amount, day))
+        gap = len(amounts) - existing[(source, day)]
+        if gap > 0:
+            for amount in amounts[-gap:]:      # take the last N (streak amounts grow daily)
+                to_award.append((source, amount, day))
 
     # ── Insert missing entries ─────────────────────────────────────────────────
     for source, amount, day in to_award:
@@ -700,6 +701,111 @@ def debug_xp_log(profile_device_id: str):
         key = f"{r['source']}@{r['created_at'][:10]}"
         summary[key] = summary.get(key, 0) + 1
     return {"total_entries": len(rows), "entries": rows, "summary": summary}
+
+
+@app.post("/api/me/cleanup-xp", status_code=200)
+@limiter.limit("5/hour")
+def cleanup_xp_duplicates(request: Request, device_id: str = Depends(require_device)):
+    """
+    Remove duplicate xp_log entries caused by the -0 slice bug in reprocess.
+    Keeps the correct number of entries per (source, day) based on event replay,
+    then recalculates total_xp.
+    """
+    from collections import defaultdict
+
+    db = get_client()
+    events = get_all_events(db, device_id)
+
+    # Replay events to get expected counts (same logic as _reprocess_events)
+    expected_counts: dict[tuple, int] = defaultdict(int)
+    commit_per_day: dict[str, int] = defaultdict(int)
+    session_days: list[str] = []
+    session_starts: dict[str, str] = {}
+
+    for ev in events:
+        etype = ev.get("event_type", "")
+        data = ev.get("data") or {}
+        day = ev["received_at"][:10]
+        sid = data.get("session_id")
+
+        if etype == "SessionStart":
+            if sid:
+                session_starts[sid] = ev["received_at"]
+            continue
+        if etype == "SessionEnd":
+            session_days.append(day)
+            continue
+        if etype != "PostToolUse":
+            continue
+        if data.get("tool_name") != "Bash":
+            continue
+
+        xp_amount, xp_source = compute_xp(data)
+        if not xp_source or xp_amount == 0:
+            continue
+
+        if xp_source == "commit":
+            if commit_per_day[day] >= 10:
+                continue
+            commit_per_day[day] += 1
+
+        expected_counts[(xp_source, day)] += 1
+
+    # Add bonus entries
+    if session_starts:
+        first_day = sorted(session_starts.values())[0][:10]
+        expected_counts[("first_session", first_day)] += 1
+    for day in sorted(set(session_days)):
+        if commit_per_day[day] > 0:
+            expected_counts[("session_commit", day)] += 1
+    streak = 0
+    prev_d: date | None = None
+    for day_str in sorted(set(session_days)):
+        d = date.fromisoformat(day_str)
+        streak = (streak + 1) if (prev_d and (d - prev_d).days == 1) else 1
+        prev_d = d
+        expected_counts[("streak", day_str)] += 1
+
+    # Fetch all xp_log entries
+    all_rows = (
+        db.table("xp_log").select("id, source, amount, created_at")
+        .eq("device_id", device_id).order("created_at").execute().data or []
+    )
+
+    # Group by (source, day), keep expected count, delete extras
+    grouped: dict[tuple, list] = defaultdict(list)
+    for row in all_rows:
+        key = (row["source"], row["created_at"][:10])
+        grouped[key].append(row)
+
+    to_delete: list[str] = []
+    for key, rows_for_key in grouped.items():
+        keep = expected_counts.get(key, 0)
+        # For quest_complete and install, keep all
+        if key[0] in ("quest_complete", "install"):
+            continue
+        if len(rows_for_key) > keep:
+            excess = rows_for_key[keep:]
+            to_delete.extend(r["id"] for r in excess)
+
+    deleted = 0
+    for row_id in to_delete:
+        db.table("xp_log").delete().eq("id", row_id).execute()
+        deleted += 1
+
+    # Recalculate total_xp
+    total_xp = sum(
+        r["amount"] for r in
+        (db.table("xp_log").select("amount").eq("device_id", device_id).execute().data or [])
+    )
+    upsert_stats(db, device_id, {"total_xp": total_xp, "level": compute_level(total_xp)})
+
+    return {
+        "status": "ok",
+        "deleted_entries": deleted,
+        "remaining_entries": len(all_rows) - deleted,
+        "total_xp": total_xp,
+    }
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
