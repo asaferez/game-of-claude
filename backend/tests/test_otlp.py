@@ -180,14 +180,18 @@ class TestOtlpMetrics:
         )
         assert res.status_code == 200
         body = res.json()
-        assert body["xp_awarded"] == 15
+        # 15 XP for commit + 20 XP session-commit bonus (first commit in session)
+        assert body["xp_awarded"] == 35
 
-        # Verify award_xp was called with "commit"
+        # Verify award_xp was called with "commit" and "session_commit"
         app_client["otlp_award_xp"].assert_called()
         calls = app_client["otlp_award_xp"].call_args_list
         commit_calls = [c for c in calls if c.args[2] == "commit"]
         assert len(commit_calls) == 1
         assert commit_calls[0].args[3] == 15
+        session_commit_calls = [c for c in calls if c.args[2] == "session_commit"]
+        assert len(session_commit_calls) == 1
+        assert session_commit_calls[0].args[3] == 20
 
     def test_pr_metric_awards_xp(self, app_client):
         c = app_client["client"]
@@ -261,7 +265,8 @@ class TestOtlpMetrics:
             headers={"Authorization": f"Bearer {device_id}"},
         )
         assert res.status_code == 200
-        assert res.json()["xp_awarded"] == 0  # capped
+        # Commit XP is 0 (capped), but session-commit bonus (20) still fires
+        assert res.json()["xp_awarded"] == 20
 
     def test_dedup_skips_already_processed(self, app_client):
         c = app_client["client"]
@@ -361,6 +366,7 @@ class TestOtlpLogs:
             headers={"Authorization": f"Bearer {device_id}"},
         )
         assert res.status_code == 200
+        assert res.json()["xp_awarded"] == 5
 
         upsert_calls = app_client["otlp_upsert_stats"].call_args_list
         branch_updates = [

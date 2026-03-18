@@ -177,9 +177,19 @@ def _process_metric_point(
         # Each increment = 1 commit
         today_commits = count_today_xp_source(db, device_id, "commit")
         xp = 15 if today_commits < 10 else 0
-        return xp, "commit", {
+        stat_updates = {
             "total_commits": (stats.get("total_commits") or 0) + 1,
         }
+
+        # Session-commit bonus: 20 XP once per session (matches sync-session behavior)
+        dp_session = _extract_session_id(dp.get("attributes", []))
+        if dp_session:
+            session_commit_key = make_source_key(dp_session, f"otel:session_commit:{dp_session}")
+            if not is_already_processed(db, session_commit_key):
+                award_xp(db, device_id, "session_commit", 20)
+                xp += 20
+
+        return xp, "commit", stat_updates
 
     if name == METRIC_PR:
         return 12, "pr", {
@@ -354,7 +364,7 @@ def _process_log_record(
 
         # Branch detection from OTEL logs (backup — metrics may not cover this)
         if is_branch_command(command):
-            return 0, "branch", {
+            return 5, "branch", {
                 "total_branches": (stats.get("total_branches") or 0) + 1,
             }
 

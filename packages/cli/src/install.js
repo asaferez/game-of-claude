@@ -58,7 +58,6 @@ function writeOtelConfig(deviceId) {
   writeFileSync(otelEnvPath, lines.join("\n") + "\n");
 
   // Write a sourceable shell snippet
-  const shellSnippet = lines.map(([k, v]) => `export ${k}="${v}"`).join("\n");
   const shellPath = join(homedir(), ".claude", "otel-env.sh");
   const exportLines = Object.entries(envVars).map(([k, v]) => `export ${k}="${v}"`);
   writeFileSync(shellPath, exportLines.join("\n") + "\n");
