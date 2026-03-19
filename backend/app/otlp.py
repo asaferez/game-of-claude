@@ -137,6 +137,15 @@ def process_metrics(payload: dict, device_id: str) -> dict:
                         stats["total_xp"] = (stats.get("total_xp") or 0) + xp
                         upsert_stats(db, device_id, {"total_xp": stats["total_xp"]})
 
+                    # Session-commit bonus: 20 XP once per session
+                    if name == METRIC_COMMIT and dp_session:
+                        sc_key = make_source_key(dp_session, f"otel:session_commit:{dp_session}")
+                        if not is_already_processed(db, sc_key):
+                            award_xp(db, device_id, "session_commit", 20)
+                            total_xp_awarded += 20
+                            stats["total_xp"] = (stats.get("total_xp") or 0) + 20
+                            upsert_stats(db, device_id, {"total_xp": stats["total_xp"]})
+
                     if src:
                         new_completions = _check_quests_safe(
                             db, device_id, stats, quest_progress, src, today
@@ -178,18 +187,9 @@ def _process_metric_point(
         # Each increment = 1 commit
         today_commits = count_today_xp_source(db, device_id, "commit")
         xp = 15 if today_commits < 10 else 0
-        stat_updates = {
+        return xp, "commit", {
             "total_commits": (stats.get("total_commits") or 0) + 1,
         }
-
-        # Session-commit bonus: 20 XP once per session (matches sync-session behavior)
-        if session_id:
-            session_commit_key = make_source_key(session_id, f"otel:session_commit:{session_id}")
-            if not is_already_processed(db, session_commit_key):
-                award_xp(db, device_id, "session_commit", 20)
-                xp += 20
-
-        return xp, "commit", stat_updates
 
     if name == METRIC_PR:
         return 12, "pr", {
