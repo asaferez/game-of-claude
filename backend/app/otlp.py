@@ -124,7 +124,7 @@ def process_metrics(payload: dict, device_id: str) -> dict:
                         continue
 
                     xp, src, stat_updates = _process_metric_point(
-                        name, dp, stats, db, device_id, today
+                        name, dp, stats, db, device_id, today, dp_session
                     )
 
                     if stat_updates:
@@ -164,7 +164,8 @@ def process_metrics(payload: dict, device_id: str) -> dict:
 
 
 def _process_metric_point(
-    name: str, dp: dict, stats: dict, db, device_id: str, today: date
+    name: str, dp: dict, stats: dict, db, device_id: str, today: date,
+    session_id: str | None = None,
 ) -> tuple[int, str, dict]:
     """
     Process a single metric data point. Returns (xp, source, stat_updates).
@@ -182,9 +183,8 @@ def _process_metric_point(
         }
 
         # Session-commit bonus: 20 XP once per session (matches sync-session behavior)
-        dp_session = _extract_session_id(dp.get("attributes", []))
-        if dp_session:
-            session_commit_key = make_source_key(dp_session, f"otel:session_commit:{dp_session}")
+        if session_id:
+            session_commit_key = make_source_key(session_id, f"otel:session_commit:{session_id}")
             if not is_already_processed(db, session_commit_key):
                 award_xp(db, device_id, "session_commit", 20)
                 xp += 20
