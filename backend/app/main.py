@@ -28,6 +28,7 @@ from .engine.xp import (
 from .engine.streak import compute_streak_xp
 from .engine.quests import QUESTS, QUEST_BY_ID, get_counter_value, quests_to_check_for_event
 from .models import HookEvent, DeviceRegister, ProfilePatch, GitSync, SessionSummary
+from .otlp import process_metrics, process_logs
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -80,6 +81,45 @@ def health():
         raise HTTPException(status_code=503, detail="DB unavailable")
 
 
+# ── OTLP Receiver ─────────────────────────────────────────────────────────────
+
+def _get_otlp_device_id(authorization: str = Header(default="")) -> str:
+    """Extract device_id from OTEL Authorization header (Bearer token)."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
+    device_id = authorization.removeprefix("Bearer ").strip()
+    db = get_client()
+    if not get_device(db, device_id):
+        raise HTTPException(status_code=404, detail="Device not registered")
+    return device_id
+
+
+@app.post("/v1/metrics", status_code=200)
+@limiter.limit("120/minute")
+async def otlp_metrics(request: Request, device_id: str = Depends(_get_otlp_device_id)):
+    """Receive OTLP ExportMetricsServiceRequest (JSON)."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    result = process_metrics(body, device_id)
+    logger.info("OTLP metrics for %s...: +%d XP", device_id[:8], result["xp_awarded"])
+    return result
+
+
+@app.post("/v1/logs", status_code=200)
+@limiter.limit("120/minute")
+async def otlp_logs(request: Request, device_id: str = Depends(_get_otlp_device_id)):
+    """Receive OTLP ExportLogsServiceRequest (JSON)."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    result = process_logs(body, device_id)
+    logger.info("OTLP logs for %s...: +%d XP", device_id[:8], result["xp_awarded"])
+    return result
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def get_device_id(authorization: str = Header(...)) -> str:
@@ -110,9 +150,9 @@ def register_device(request: Request, body: DeviceRegister):
     return {"status": "registered", "xp_awarded": 25}
 
 
-# ── Ingest events ─────────────────────────────────────────────────────────────
+# ── Ingest events (DEPRECATED — use OTLP /v1/metrics + /v1/logs instead) ─────
 
-@app.post("/api/events", status_code=200)
+@app.post("/api/events", status_code=200, deprecated=True)
 @limiter.limit("60/minute")
 def ingest_event(request: Request, body: HookEvent, device_id: str = Depends(require_device)):
     db = get_client()
@@ -234,6 +274,7 @@ def get_profile(profile_device_id: str):
         "sessions_today": get_today_session_count(db, profile_device_id),
         "quests": _build_quest_states(stats, quest_progress, today),
         "member_since": device.get("created_at", ""),
+        "sync_status": _get_sync_status(db, profile_device_id),
     }
 
 
@@ -634,12 +675,13 @@ def sync_git_stats(request: Request, body: GitSync, device_id: str = Depends(req
     }
 
 
-# ── Session Sync (transcript-based) ──────────────────────────────────────────
+# ── Session Sync (DEPRECATED — use OTLP /v1/metrics + /v1/logs instead) ──────
 
-@app.post("/api/me/sync-session", status_code=200)
+@app.post("/api/me/sync-session", status_code=200, deprecated=True)
 @limiter.limit("60/hour")
 def sync_session(request: Request, body: SessionSummary, device_id: str = Depends(require_device)):
     """
+    DEPRECATED: Use OpenTelemetry export (/v1/metrics + /v1/logs) instead.
     Accept a session summary from the transcript parser (process_session.py).
     Deduplicates by session_id — safe to call multiple times for the same session.
     Updates user_stats and awards XP for the session.
@@ -1101,6 +1143,35 @@ def _check_quests(db, device_id, stats, quest_progress, event_source, today) -> 
                 completions.append({"quest_id": quest.id, "quest_name": quest.name, "xp_awarded": quest.xp_reward})
 
     return completions
+
+
+def _get_sync_status(db, device_id: str) -> dict:
+    """Return sync method info: last OTEL event and last legacy event timestamps."""
+    try:
+        otel_res = (
+            db.table("events")
+            .select("received_at")
+            .eq("device_id", device_id)
+            .like("event_type", "otel:%")
+            .order("received_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        legacy_res = (
+            db.table("events")
+            .select("received_at")
+            .eq("device_id", device_id)
+            .not_.like("event_type", "otel:%")
+            .order("received_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        last_otel = otel_res.data[0]["received_at"] if otel_res.data else None
+        last_legacy = legacy_res.data[0]["received_at"] if legacy_res.data else None
+        method = "otel" if (last_otel and (not last_legacy or last_otel > last_legacy)) else "legacy" if last_legacy else "none"
+        return {"method": method, "last_otel_event": last_otel, "last_legacy_event": last_legacy}
+    except Exception:
+        return {"method": "unknown", "last_otel_event": None, "last_legacy_event": None}
 
 
 def _build_quest_states(stats, quest_progress, today) -> list[dict]:

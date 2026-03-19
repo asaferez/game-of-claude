@@ -255,6 +255,11 @@ export default async function DashboardPage({ searchParams }) {
           </div>
         </section>
       )}
+
+      {/* ── SYNC STATUS ── */}
+      {profile.sync_status && (
+        <SyncStatus status={profile.sync_status} />
+      )}
     </main>
   );
 }
@@ -314,6 +319,48 @@ function MiniBarList({ items }) {
   );
 }
 
+
+function SyncStatus({ status }) {
+  const method = status.method;
+  const lastEvent = status.last_otel_event || status.last_legacy_event;
+  const ago = lastEvent
+    ? formatTimeAgo(new Date(lastEvent))
+    : "never";
+
+  return (
+    <div className="mt-8 mb-4 text-center">
+      <div className="inline-flex items-center gap-2 text-xs text-muted">
+        <span
+          className={`inline-block w-1.5 h-1.5 rounded-full ${
+            method === "otel"
+              ? "bg-green-500"
+              : method === "legacy"
+              ? "bg-yellow-500"
+              : "bg-red-500"
+          }`}
+        />
+        <span>
+          {method === "otel" && "OpenTelemetry sync"}
+          {method === "legacy" && "Legacy hook sync"}
+          {method === "none" && "No data received"}
+          {method === "unknown" && "Sync status unknown"}
+        </span>
+        {lastEvent && <span>· last event {ago}</span>}
+      </div>
+    </div>
+  );
+}
+
+function formatTimeAgo(date) {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
 
 function MissingId() {
   return (

@@ -38,6 +38,33 @@ function mergeHooks(existing, newHooks) {
   return settings;
 }
 
+function buildOtelEnvVars(deviceId) {
+  return {
+    CLAUDE_CODE_ENABLE_TELEMETRY: "1",
+    OTEL_METRICS_EXPORTER: "otlp",
+    OTEL_LOGS_EXPORTER: "otlp",
+    OTEL_EXPORTER_OTLP_PROTOCOL: "http/json",
+    OTEL_EXPORTER_OTLP_ENDPOINT: API_BASE,
+    OTEL_EXPORTER_OTLP_HEADERS: `Authorization=Bearer ${deviceId}`,
+  };
+}
+
+function writeOtelConfig(deviceId) {
+  const envVars = buildOtelEnvVars(deviceId);
+  const lines = Object.entries(envVars).map(([k, v]) => `${k}=${v}`);
+
+  // Write to ~/.claude/otel.env for reference
+  const otelEnvPath = join(homedir(), ".claude", "otel.env");
+  writeFileSync(otelEnvPath, lines.join("\n") + "\n");
+
+  // Write a sourceable shell snippet
+  const shellPath = join(homedir(), ".claude", "otel-env.sh");
+  const exportLines = Object.entries(envVars).map(([k, v]) => `export ${k}="${v}"`);
+  writeFileSync(shellPath, exportLines.join("\n") + "\n");
+
+  return { envVars, otelEnvPath, shellPath };
+}
+
 export async function install() {
   console.log("\n🎮 Game of Claude — Installer\n");
   const existing = readConfig();
@@ -66,7 +93,7 @@ export async function install() {
     process.exit(1);
   }
 
-  // Install process_session.py script to ~/.claude/scripts/
+  // Install process_session.py script to ~/.claude/scripts/ (legacy fallback)
   const scriptsDir = join(homedir(), ".claude", "scripts");
   if (!existsSync(scriptsDir)) mkdirSync(scriptsDir, { recursive: true });
   const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -76,15 +103,29 @@ export async function install() {
     copyFileSync(scriptSrc, scriptDest);
   }
 
+  // Legacy hooks (kept as fallback)
   let settings = {};
   if (existsSync(SETTINGS_FILE)) {
     try { settings = JSON.parse(readFileSync(SETTINGS_FILE, "utf8")); } catch {}
   }
   writeFileSync(SETTINGS_FILE, JSON.stringify(mergeHooks(settings, buildHooks(deviceId)), null, 2));
-  writeConfig({ device_id: deviceId, character_name: characterName, api_base: API_BASE });
+
+  // OpenTelemetry configuration (primary sync method)
+  const { otelEnvPath, shellPath } = writeOtelConfig(deviceId);
+
+  writeConfig({ device_id: deviceId, character_name: characterName, api_base: API_BASE, sync_method: "otel" });
 
   console.log(`\n✅ You're in the game, ${characterName}! (+25 XP welcome bonus)`);
   console.log(`\n📊 Dashboard: ${DASHBOARD_BASE}/dashboard?id=${deviceId}`);
   console.log("   (bookmark this — it's your personal quest board)");
-  console.log("\n🔄 Restart Claude Code now — hooks activate on the next session.\n");
+  console.log("\n📡 OpenTelemetry sync configured (reliable, batched delivery).");
+  console.log("   To activate, add this to your shell profile (~/.bashrc or ~/.zshrc):");
+  console.log(`\n   source ${shellPath}\n`);
+  console.log("   Or set these env vars before running Claude Code:");
+  const envVars = buildOtelEnvVars(deviceId);
+  for (const [k, v] of Object.entries(envVars)) {
+    console.log(`   export ${k}="${v}"`);
+  }
+  console.log(`\n   Config also saved to: ${otelEnvPath}`);
+  console.log("\n🔄 Restart Claude Code now — telemetry activates on the next session.\n");
 }
